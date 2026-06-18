@@ -1,0 +1,76 @@
+# ================================================================
+# application-local.yml
+# Local development profile — uses H2 in-memory database
+#
+# How to activate:
+#   In VS Code terminal:  set SPRING_PROFILES_ACTIVE=local
+#   Then run:             mvn spring-boot:run -pl auth-service
+#
+# Or add to VS Code launch.json:
+#   "env": { "SPRING_PROFILES_ACTIVE": "local" }
+#
+# H2 data is in-memory — it is wiped every time the app restarts.
+# That is fine for development — Flyway re-creates the schema on startup.
+# ================================================================
+
+spring:
+
+  # ── H2 in-memory database ─────────────────────────────────────
+  datasource:
+    url: jdbc:h2:mem:olp_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
+    # MODE=PostgreSQL makes H2 behave like PostgreSQL as closely as possible
+    # DB_CLOSE_DELAY=-1 keeps H2 alive while the JVM is running
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+
+    hikari:
+      pool-name: auth-local-pool
+      maximum-pool-size: 5    # smaller pool — only one developer
+      minimum-idle: 1
+
+  # ── JPA ───────────────────────────────────────────────────────
+  jpa:
+    hibernate:
+      ddl-auto: validate      # still let Flyway manage the schema, not Hibernate
+    show-sql: true            # show SQL in console — helpful for debugging locally
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+
+  # ── H2 Console — view your data in browser ───────────────────
+  # Open http://localhost:8081/h2-console when the app is running
+  # JDBC URL: jdbc:h2:mem:olp_db
+  # Username: sa   Password: (leave blank)
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+      settings:
+        web-allow-others: false   # only accessible from localhost
+
+  # ── Flyway ────────────────────────────────────────────────────
+  flyway:
+    enabled: true
+    locations: classpath:db/migration-h2   # H2-compatible SQL, separate from PostgreSQL migrations
+    baseline-on-migrate: true
+
+# ── Cognito — use dummy values locally ───────────────────────────
+# Cognito calls are made by CognitoService.
+# Locally we use a MockCognitoService so no real AWS calls happen.
+# See MockCognitoConfig.java — it is only active on the local profile.
+cognito:
+  region: ap-south-1
+  user-pool-id: local-dummy-pool-id
+  client-id: local-dummy-client-id
+  jwks-uri: http://localhost:8081/dummy-jwks   # not actually called locally
+
+# ── Logging — more verbose locally ───────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.olp: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql: TRACE   # shows actual parameter values in SQL
+    org.flywaydb: DEBUG

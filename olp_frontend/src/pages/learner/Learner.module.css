@@ -1,0 +1,63 @@
+.page { padding: 32px 0 64px; min-height: calc(100vh - 60px); }
+
+.pageHeader { margin-bottom: 28px; }
+.pageHeader h1 { font-size: 26px; font-weight: 700; color: var(--navy); }
+.pageHeader p  { color: var(--text-muted); margin-top: 4px; font-size: 15px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 24px;
+}
+
+.searchRow {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 24px;
+  align-items: center;
+}
+.searchInput {
+  flex: 1;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  outline: none;
+  max-width: 400px;
+}
+.searchInput:focus { border-color: var(--teal); }
+
+.center { display: flex; justify-content: center; align-items: center; padding: 40px 0; }
+.empty  { text-align: center; padding: 60px 0; color: var(--text-muted); }
+
+/* Course detail */
+.detailLayout {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 32px;
+  align-items: start;
+}
+@media (max-width: 900px) { .detailLayout { grid-template-columns: 1fr; } }
+
+.sidebar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-sm);
+  position: sticky;
+  top: 80px;
+}
+
+.metaList { display: flex; flex-direction: column; gap: 12px; margin: 16px 0; }
+.metaItem { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; }
+.metaLabel { color: var(--text-muted); min-width: 90px; flex-shrink: 0; }
+
+.objectives { margin-top: 20px; }
+.objectives h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.objectives li { font-size: 14px; color: var(--text-muted); padding: 4px 0; margin-left: 16px; }
+
+.progressBig { margin: 20px 0; }
+.progressBigBar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.progressBigFill { height: 100%; background: var(--teal); border-radius: 4px; transition: width 0.4s; }
+.progressBigText { font-size: 13px; color: var(--text-muted); margin-top: 4px; }

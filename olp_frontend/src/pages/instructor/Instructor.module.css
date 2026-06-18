@@ -1,0 +1,78 @@
+.page { padding: 32px 0 64px; min-height: calc(100vh - 60px); }
+
+.pageHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.pageHeader h1 { font-size: 26px; font-weight: 700; color: var(--navy); }
+.pageHeader p  { color: var(--text-muted); margin-top: 4px; font-size: 15px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 24px;
+}
+
+.center { display: flex; justify-content: center; padding: 40px 0; }
+.empty  { text-align: center; padding: 60px 0; color: var(--text-muted); }
+
+/* Modal */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.modal {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 32px;
+  width: 100%;
+  max-width: 480px;
+  box-shadow: var(--shadow-lg);
+}
+.modal h2 { font-size: 20px; font-weight: 600; margin-bottom: 20px; color: var(--navy); }
+.modalForm { display: flex; flex-direction: column; gap: 16px; }
+.modalActions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 8px; }
+
+/* Upload area */
+.uploadZone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-lg);
+  padding: 32px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+.uploadZone:hover, .uploadZone.drag {
+  border-color: var(--teal);
+  background: var(--teal-light);
+}
+.uploadZone input { display: none; }
+.uploadIcon { font-size: 36px; margin-bottom: 8px; }
+.uploadText { font-size: 14px; color: var(--text-muted); }
+
+.uploadProgress {
+  margin-top: 12px;
+  background: var(--border);
+  border-radius: 4px;
+  height: 6px;
+  overflow: hidden;
+}
+.uploadProgressFill {
+  height: 100%;
+  background: var(--teal);
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+.statusMsg { font-size: 13px; margin-top: 8px; color: var(--text-muted); }
+.statusMsg.error { color: var(--red); }
+.statusMsg.success { color: var(--green); }

@@ -1,0 +1,42 @@
+# ================================================================
+# application-local.yml — enrollment-service local profile
+# Activate with: set SPRING_PROFILES_ACTIVE=local
+# ================================================================
+
+spring:
+
+  datasource:
+    url: jdbc:h2:mem:olp_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+    hikari:
+      pool-name: enrollment-local-pool
+      maximum-pool-size: 5
+      minimum-idle: 1
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration-h2
+    baseline-on-migrate: true
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+logging:
+  level:
+    root: INFO
+    com.olp: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.flywaydb: DEBUG

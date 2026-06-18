@@ -1,0 +1,36 @@
+# ── Maven build output ─────────────────────────────────────────
+target/
+*.class
+*.jar
+*.war
+
+# ── IDE ───────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# ── Node / Frontend ───────────────────────────────────────────
+olp_frontend/node_modules/
+olp_frontend/dist/
+olp_frontend/.env
+
+# ── Secrets — NEVER commit ────────────────────────────────────
+.env
+*.env
+application-prod.yml
+*-secret.yml
+
+# ── Maven SSL workaround files — do not commit ────────────────
+.mvn/jvm.config
+
+# ── OS ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+logs/

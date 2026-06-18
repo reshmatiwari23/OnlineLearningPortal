@@ -1,0 +1,49 @@
+# ================================================================
+# application-local.yml — course-service local development profile
+# Activate with: set SPRING_PROFILES_ACTIVE=local
+# ================================================================
+
+spring:
+
+  datasource:
+    url: jdbc:h2:mem:olp_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+    hikari:
+      pool-name: course-local-pool
+      maximum-pool-size: 5
+      minimum-idle: 1
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration-h2
+    baseline-on-migrate: true
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+# ── Mock S3 — no real AWS calls locally ──────────────────────────
+aws:
+  region: ap-south-1
+  s3:
+    videos-bucket: olp-videos-local
+    presigned-url-expiry-minutes: 15
+
+logging:
+  level:
+    root: INFO
+    com.olp: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.flywaydb: DEBUG

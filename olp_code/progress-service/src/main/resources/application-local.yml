@@ -1,0 +1,62 @@
+# ================================================================
+# application-local.yml — progress-service local development
+# Activate with: set SPRING_PROFILES_ACTIVE=local
+#
+# Local setup:
+#   - H2 in-memory database (no PostgreSQL needed)
+#   - MockRedisService replaces real Redis operations
+#   - MockSqsService replaces real SQS (logs instead of sending)
+# ================================================================
+
+spring:
+
+  datasource:
+    url: jdbc:h2:mem:olp_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+    hikari:
+      pool-name: progress-local-pool
+      maximum-pool-size: 5
+      minimum-idle: 1
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration-h2
+    baseline-on-migrate: true
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  # Redis config — still declared but MockRedisService overrides it locally
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+aws:
+  region: ap-south-1
+  sqs:
+    progress-queue-url: http://localhost:9324/queue/olp-progress-writes-queue
+
+progress:
+  redis-ttl-seconds: 60
+  completion-threshold: 100
+
+logging:
+  level:
+    root: INFO
+    com.olp: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.flywaydb: DEBUG

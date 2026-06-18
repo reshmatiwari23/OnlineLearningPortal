@@ -1,0 +1,22 @@
+.wrapper {
+  background: #000;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+
+/* Override Video.js theme colours */
+.wrapper :global(.video-js) {
+  --vjs-theme-color: var(--teal);
+}
+.wrapper :global(.vjs-big-play-button) {
+  background: rgba(5, 129, 155, 0.8);
+  border: none;
+  border-radius: 50%;
+  width: 64px;
+  height: 64px;
+  line-height: 64px;
+}
+.wrapper :global(.vjs-play-progress) {
+  background: var(--teal);
+}

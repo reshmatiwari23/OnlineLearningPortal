@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.olp</groupId>
+        <artifactId>online-learning-portal</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>ai-service</artifactId>
+    <packaging>jar</packaging>
+    <name>OLP AI Service</name>
+    <description>Gen AI microservice — the ONLY service with Bedrock IAM permissions.</description>
+
+    <properties>
+        <!-- explicit version — bedrockagentruntime is NOT in AWS SDK BOM -->
+        <bedrockagentruntime.version>2.21.35</bedrockagentruntime.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>com.olp</groupId>
+            <artifactId>common</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Redis — recommendation caching -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <!-- ALL AWS Bedrock dependencies — only when deploying (mvn -Paws) -->
+    <profiles>
+        <profile>
+            <id>aws</id>
+            <dependencies>
+                <!-- bedrockruntime — version from AWS SDK BOM -->
+                <dependency>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>bedrockruntime</artifactId>
+                </dependency>
+                <!-- bedrockagentruntime — NOT in BOM, explicit version -->
+                <dependency>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>bedrockagentruntime</artifactId>
+                    <version>${bedrockagentruntime.version}</version>
+                </dependency>
+                <dependency>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>dynamodb</artifactId>
+                </dependency>
+                <dependency>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>opensearchserverless</artifactId>
+                </dependency>
+                <dependency>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>ses</artifactId>
+                </dependency>
+            </dependencies>
+
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <executions>
+                            <execution>
+                                <id>add-aws-source</id>
+                                <phase>generate-sources</phase>
+                                <goals><goal>add-source</goal></goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src/aws/java</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>com.olp.ai.AiServiceApplication</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

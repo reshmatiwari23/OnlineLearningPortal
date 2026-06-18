@@ -1,0 +1,41 @@
+# ================================================================
+# application-local.yml — ai-service local development profile
+# Activate with: set SPRING_PROFILES_ACTIVE=local
+#
+# All Bedrock, DynamoDB, and OpenSearch calls are MOCKED locally.
+# MockBedrockService returns canned responses instantly.
+# No AWS credentials required to run locally.
+# ================================================================
+
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+bedrock:
+  region: us-east-1
+  models:
+    sonnet: claude-sonnet-4-6
+    haiku:  claude-haiku-4-5-20251001
+    titan-embeddings: amazon.titan-embed-text-v2:0
+  knowledge-base:
+    id: local-mock-kb-id
+    similarity-threshold: 0.75
+    max-results: 5
+
+aws:
+  region: ap-south-1
+  dynamodb:
+    region: ap-south-1
+    sessions-table: olp-ai-sessions-local
+    session-ttl-hours: 24
+
+cache:
+  recommendations-ttl-minutes: 60
+  search-ttl-minutes: 30
+
+logging:
+  level:
+    root: INFO
+    com.olp: DEBUG
