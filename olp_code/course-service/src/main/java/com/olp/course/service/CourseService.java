@@ -4,6 +4,7 @@ import com.olp.common.exception.DuplicateResourceException;
 import com.olp.common.exception.ResourceNotFoundException;
 import com.olp.common.exception.UnauthorisedException;
 import com.olp.course.dto.*;
+import com.olp.course.service.S3Port;
 import com.olp.course.entity.Course;
 import com.olp.course.entity.UploadStatus;
 import com.olp.course.repository.CourseRepository;
@@ -33,7 +34,7 @@ import java.util.UUID;
 public class CourseService {
 
     private final CourseRepository courseRepository;
-    private final S3Service s3Service;
+    private final S3Port s3Service;
 
     // ── Create ─────────────────────────────────────────────────
 
@@ -151,7 +152,7 @@ public class CourseService {
         // Verify the instructor owns this course before generating upload URL
         Course course = findCourseOwnedByInstructor(courseId, instructorId);
 
-        S3Service.PresignedUploadResult result =
+        S3Port.PresignedUploadResult result =
                 s3Service.generateUploadUrl(courseId, fileName);
 
         // Store the S3 key and mark status as PENDING

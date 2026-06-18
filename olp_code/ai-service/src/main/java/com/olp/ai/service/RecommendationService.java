@@ -37,7 +37,7 @@ import java.util.UUID;
 @Slf4j
 public class RecommendationService {
 
-    private final BedrockService bedrockService;
+    private final BedrockPort bedrockService;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 

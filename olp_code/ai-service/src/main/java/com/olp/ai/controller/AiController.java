@@ -1,7 +1,7 @@
 package com.olp.ai.controller;
 
 import com.olp.ai.dto.*;
-import com.olp.ai.service.BedrockService;
+import com.olp.ai.service.BedrockPort;
 import com.olp.ai.service.NudgeService;
 import com.olp.ai.service.RecommendationService;
 import com.olp.common.dto.ApiResponse;
@@ -34,7 +34,7 @@ import java.util.List;
 @Slf4j
 public class AiController {
 
-    private final BedrockService bedrockService;
+    private final BedrockPort bedrockService;
     private final RecommendationService recommendationService;
     private final NudgeService nudgeService;
 
