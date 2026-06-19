@@ -11,13 +11,12 @@ interface Props {
   onProgress?: (percent: number) => void;
 }
  
-const PROGRESS_INTERVAL_MS = 5000;
+const PROGRESS_INTERVAL_MS = 2000; // every 2 seconds — catches end of short videos
  
 export default function VideoPlayer({ courseId, src, startAt = 0, onProgress }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const videoElRef   = useRef<HTMLVideoElement>(null);
-  const playerRef    = useRef<Player | null>(null);
-  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const videoElRef  = useRef<HTMLVideoElement>(null);
+  const playerRef   = useRef<Player | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
  
   const stopInterval = useCallback(() => {
     if (intervalRef.current) {
@@ -26,12 +25,28 @@ export default function VideoPlayer({ courseId, src, startAt = 0, onProgress }: 
     }
   }, []);
  
+  const sendProgress = useCallback(async (player: Player, forceComplete = false) => {
+    const current  = forceComplete
+      ? Math.floor(player.duration() ?? 0)
+      : Math.floor(player.currentTime() ?? 0);
+    const duration = Math.floor(player.duration() ?? 0);
+ 
+    if (duration <= 0) return;
+ 
+    try {
+      const p = await progressService.update(courseId, {
+        currentTimeSecs: current,
+        durationSecs:    duration,
+      });
+      if (p && onProgress) onProgress(p.percentComplete);
+    } catch {
+      // Ignore progress update errors silently
+    }
+  }, [courseId, onProgress]);
+ 
   useEffect(() => {
-    // Guard: element must be in the DOM
     if (!videoElRef.current) return;
-    // Guard: do not initialise twice
     if (playerRef.current) return;
-    // Guard: must have a src
     if (!src) return;
  
     const player = videojs(videoElRef.current, {
@@ -51,21 +66,26 @@ export default function VideoPlayer({ courseId, src, startAt = 0, onProgress }: 
     player.on('play', () => {
       stopInterval();
       intervalRef.current = setInterval(() => {
-        const current  = Math.floor(player.currentTime() ?? 0);
-        const duration = Math.floor(player.duration()    ?? 0);
-        if (duration > 0) {
-          progressService.update(courseId, {
-            currentTimeSecs: current,
-            durationSecs:    duration,
-          })
-          .then(p => { if (p && onProgress) onProgress(p.percentComplete); })
-          .catch(() => {});
-        }
+        sendProgress(player);
       }, PROGRESS_INTERVAL_MS);
     });
  
-    player.on('pause', stopInterval);
-    player.on('ended', stopInterval);
+    player.on('pause', () => {
+      stopInterval();
+      // Send progress on pause so position is saved
+      sendProgress(player);
+    });
+ 
+    player.on('ended', async () => {
+      stopInterval();
+      // Force 100% on video end regardless of polling timing
+      await sendProgress(player, true);
+      if (onProgress) onProgress(100);
+    });
+ 
+    player.on('error', () => {
+      console.error('VideoPlayer error — src:', src);
+    });
  
     return () => {
       stopInterval();
@@ -80,9 +100,8 @@ export default function VideoPlayer({ courseId, src, startAt = 0, onProgress }: 
   if (!src) return null;
  
   return (
-    <div ref={containerRef} className={styles.wrapper}>
+    <div className={styles.wrapper}>
       <div data-vjs-player>
-        {/* Use a real <video> element ref — avoids StrictMode double-mount issue */}
         <video
           ref={videoElRef}
           className="video-js vjs-big-play-centered"
