@@ -1,5 +1,5 @@
 package com.olp.progress.service;
-
+ 
 import com.olp.common.exception.ResourceNotFoundException;
 import com.olp.progress.dto.ProgressEvent;
 import com.olp.progress.dto.ProgressResponse;
@@ -10,57 +10,56 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+ 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
-
-/**
- * Core progress tracking service.
- *
- * Write path (hot):
- *   1. Write to Redis (sync, sub-millisecond)
- *   2. Publish to SQS via SqsPort (async, fire-and-forget)
- *
- * Read path:
- *   1. Check Redis (fast)
- *   2. Fall back to RDS if not in cache
- */
+ 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class ProgressService {
-
+ 
     private final VideoProgressRepository progressRepository;
     private final RedisProgressService redisProgressService;
-    private final SqsPort sqsPort;   // injected — real SQS or mock depending on profile
-
+    private final SqsPort sqsPort;
+ 
     public ProgressResponse updateProgress(UUID courseId,
                                            String userId,
                                            UpdateProgressRequest request) {
+ 
+        UUID userUuid = UUID.fromString(userId);
         int percent = calculatePercent(
                 request.getCurrentTimeSecs(), request.getDurationSecs());
-
-        // Step 1 — write to Redis (synchronous, fast)
-        redisProgressService.saveProgress(userId, courseId.toString(), percent);
-
-        // Step 2 — publish to SQS (async, fire-and-forget)
+ 
+        // Step 1 — write to Redis (best effort — Redis may not be running locally)
+        try {
+            redisProgressService.writeProgress(userUuid, courseId, percent);
+        } catch (Exception e) {
+            log.debug("Redis write skipped (Redis not available locally): {}", e.getMessage());
+        }
+ 
+        // Step 2 — publish to SQS/mock (this writes to H2 locally)
         ProgressEvent event = ProgressEvent.builder()
-                .userId(userId)
+                .userId(userUuid)
                 .courseId(courseId)
                 .currentTimeSecs(request.getCurrentTimeSecs())
                 .durationSecs(request.getDurationSecs())
                 .percentComplete(percent)
-                .completed(percent >= 100)
                 .eventTime(LocalDateTime.now())
                 .build();
-
-        sqsPort.publish(event);
-
+ 
+        try {
+            sqsPort.publish(event);
+        } catch (Exception e) {
+            log.warn("SQS publish failed: {} — persisting directly to H2", e.getMessage());
+            // Fallback — write directly to H2 if mock SQS fails
+            persistProgressEvent(event);
+        }
+ 
         return ProgressResponse.builder()
-                .userId(UUID.fromString(userId))
+                .userId(userUuid)
                 .courseId(courseId)
                 .currentTimeSecs(request.getCurrentTimeSecs())
                 .durationSecs(request.getDurationSecs())
@@ -69,49 +68,55 @@ public class ProgressService {
                 .source("redis")
                 .build();
     }
-
+ 
     public ProgressResponse getProgress(UUID courseId, String userId) {
-        // Try Redis first
-        Optional<Integer> cached = redisProgressService.getProgress(userId, courseId.toString());
-        if (cached.isPresent()) {
-            log.debug("Progress cache hit: userId={}, courseId={}", userId, courseId);
-            VideoProgress dbProgress = progressRepository
-                    .findByUserIdAndCourseId(userId, courseId).orElse(null);
-
-            return ProgressResponse.builder()
-                    .userId(UUID.fromString(userId))
-                    .courseId(courseId)
-                    .currentTimeSecs(dbProgress != null ? dbProgress.getCurrentTimeSecs() : 0)
-                    .durationSecs(dbProgress != null ? dbProgress.getDurationSecs() : 0)
-                    .percentComplete(cached.get())
-                    .completed(cached.get() >= 100)
-                    .source("redis")
-                    .build();
+        UUID userUuid = UUID.fromString(userId);
+ 
+        // Try Redis first (may fail locally)
+        try {
+            Integer cached = redisProgressService.readProgress(userUuid, courseId);
+            if (cached != null) {
+                VideoProgress db = progressRepository
+                        .findByUserIdAndCourseId(userUuid, courseId)
+                        .orElse(null);
+                return ProgressResponse.builder()
+                        .userId(userUuid)
+                        .courseId(courseId)
+                        .currentTimeSecs(db != null ? db.getCurrentTimeSecs() : 0)
+                        .durationSecs(db != null ? db.getDurationSecs() : 0)
+                        .percentComplete(cached)
+                        .completed(cached >= 100)
+                        .source("redis")
+                        .build();
+            }
+        } catch (Exception e) {
+            log.debug("Redis read skipped: {}", e.getMessage());
         }
-
-        // Fall back to RDS
+ 
+        // Fall back to H2
         VideoProgress progress = progressRepository
-                .findByUserIdAndCourseId(userId, courseId)
+                .findByUserIdAndCourseId(userUuid, courseId)
                 .orElseThrow(() -> new ResourceNotFoundException(
-                        "Progress", "userId/courseId", userId + "/" + courseId));
-
+                        "Progress", "courseId", courseId));
+ 
         return toResponse(progress, "database");
     }
-
+ 
     public List<ProgressResponse> getAllProgressForUser(String userId) {
-        return progressRepository.findAllByUserId(userId)
+        UUID userUuid = UUID.fromString(userId);
+        return progressRepository.findAllByUserId(userUuid)
                 .stream()
                 .map(p -> toResponse(p, "database"))
                 .collect(Collectors.toList());
     }
-
+ 
     public List<ProgressResponse> getAllProgressForCourse(UUID courseId) {
         return progressRepository.findAllByCourseId(courseId)
                 .stream()
                 .map(p -> toResponse(p, "database"))
                 .collect(Collectors.toList());
     }
-
+ 
     @Transactional
     public void persistProgressEvent(ProgressEvent event) {
         VideoProgress progress = progressRepository
@@ -120,36 +125,41 @@ public class ProgressService {
                         .userId(event.getUserId())
                         .courseId(event.getCourseId())
                         .build());
-
+ 
         progress.setCurrentTimeSecs(event.getCurrentTimeSecs());
         progress.setDurationSecs(event.getDurationSecs());
         progress.setPercentComplete(event.getPercentComplete());
-        progress.setCompleted(event.isCompleted());
-        if (event.isCompleted() && progress.getCompletedAt() == null) {
+        progress.setLastUpdatedAt(
+                event.getEventTime() != null ? event.getEventTime() : LocalDateTime.now());
+ 
+        if (event.getPercentComplete() >= 100 && progress.getCompletedAt() == null) {
             progress.setCompletedAt(LocalDateTime.now());
         }
-
+ 
         progressRepository.save(progress);
-        log.debug("Progress persisted: userId={}, percent={}",
-                event.getUserId(), event.getPercentComplete());
+        log.debug("Progress saved: userId={}, courseId={}, percent={}",
+                event.getUserId(), event.getCourseId(), event.getPercentComplete());
     }
-
+ 
     private int calculatePercent(int current, int duration) {
         if (duration <= 0) return 0;
         return Math.min(100, (int) Math.round((current * 100.0) / duration));
     }
-
+ 
     private ProgressResponse toResponse(VideoProgress p, String source) {
+        boolean completed = p.getCompletedAt() != null;
         return ProgressResponse.builder()
-                .userId(UUID.fromString(p.getUserId()))
+                .userId(p.getUserId())
                 .courseId(p.getCourseId())
                 .currentTimeSecs(p.getCurrentTimeSecs())
                 .durationSecs(p.getDurationSecs())
                 .percentComplete(p.getPercentComplete())
-                .completed(p.isCompleted())
+                .completed(completed)
                 .completedAt(p.getCompletedAt())
-                .lastUpdatedAt(p.getUpdatedAt())
+                .lastUpdatedAt(p.getLastUpdatedAt())
                 .source(source)
                 .build();
     }
 }
+ 
+ 

@@ -1,5 +1,5 @@
 package com.olp.ai.exception;
-
+ 
 import com.olp.common.dto.ApiResponse;
 import com.olp.common.exception.UnauthorisedException;
 import lombok.extern.slf4j.Slf4j;
@@ -9,20 +9,32 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-
+import org.springframework.web.servlet.resource.NoResourceFoundException;
+ 
 import java.util.HashMap;
 import java.util.Map;
-
+ 
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
-
+ 
+    /**
+     * Ignore browser requests for static resources like / and favicon.ico.
+     * These are harmless — the browser auto-requests them.
+     * Return 404 silently without logging.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Void> handleNoResource(NoResourceFoundException ex) {
+        // No logging — this is browser noise, not an application error
+        return ResponseEntity.notFound().build();
+    }
+ 
     @ExceptionHandler(UnauthorisedException.class)
     public ResponseEntity<ApiResponse<Object>> handleUnauthorised(UnauthorisedException ex) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(ApiResponse.error(ex.getMessage()));
     }
-
+ 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Map<String, String>>> handleValidation(
             MethodArgumentNotValidException ex) {
@@ -38,7 +50,7 @@ public class GlobalExceptionHandler {
                         .data(errors)
                         .build());
     }
-
+ 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Object>> handleGeneric(Exception ex) {
         log.error("AI service error: {}", ex.getMessage(), ex);
@@ -47,3 +59,5 @@ public class GlobalExceptionHandler {
                         "AI service temporarily unavailable. Please try again."));
     }
 }
+ 
+ 

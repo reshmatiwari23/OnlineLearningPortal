@@ -1,5 +1,5 @@
 package com.olp.progress.exception;
-
+ 
 import com.olp.common.dto.ApiResponse;
 import com.olp.common.exception.ResourceNotFoundException;
 import com.olp.common.exception.UnauthorisedException;
@@ -10,28 +10,38 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-
+import org.springframework.web.servlet.resource.NoResourceFoundException;
+ 
 import java.util.HashMap;
 import java.util.Map;
-
+ 
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
-
+ 
+    /** Silently return 404 for browser requests to / and favicon.ico */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Void> handleNoResource(NoResourceFoundException ex) {
+        return ResponseEntity.notFound().build();
+    }
+ 
+    /**
+     * Return 404 when no progress record exists.
+     * This is normal — not an error. Frontend handles null progress gracefully.
+     */
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<ApiResponse<Object>> handleNotFound(ResourceNotFoundException ex) {
-        log.warn("Not found: {}", ex.getMessage());
+        // Do not log — this is expected when progress does not exist yet
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiResponse.error(ex.getMessage()));
     }
-
+ 
     @ExceptionHandler(UnauthorisedException.class)
     public ResponseEntity<ApiResponse<Object>> handleUnauthorised(UnauthorisedException ex) {
-        log.warn("Unauthorised: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(ApiResponse.error(ex.getMessage()));
     }
-
+ 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Map<String, String>>> handleValidation(
             MethodArgumentNotValidException ex) {
@@ -47,11 +57,13 @@ public class GlobalExceptionHandler {
                         .data(errors)
                         .build());
     }
-
+ 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Object>> handleGeneric(Exception ex) {
-        log.error("Unexpected error: {}", ex.getMessage(), ex);
+        log.error("Progress service error: {}", ex.getMessage(), ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ApiResponse.error("An unexpected error occurred"));
+                .body(ApiResponse.error("An unexpected error occurred. Please try again."));
     }
 }
+ 
+ 

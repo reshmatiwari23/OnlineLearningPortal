@@ -5,7 +5,7 @@ export interface ApiResponse<T> {
   data: T;
   timestamp: string;
 }
-
+ 
 // ── Auth ───────────────────────────────────────────────────────
 export interface AuthResponse {
   token: string;
@@ -15,20 +15,20 @@ export interface AuthResponse {
   role: 'user' | 'instructor';
   expiresIn: number;
 }
-
+ 
 export interface SignupRequest {
   email: string;
   password: string;
   name: string;
   role: 'user' | 'instructor';
 }
-
+ 
 export interface LoginRequest {
   email: string;
   password: string;
 }
-
-// ── User (decoded from JWT / stored in context) ────────────────
+ 
+// ── User ───────────────────────────────────────────────────────
 export interface User {
   userId: string;
   email: string;
@@ -36,62 +36,57 @@ export interface User {
   role: 'user' | 'instructor';
   token: string;
 }
-
+ 
 // ── Course ─────────────────────────────────────────────────────
-export type UploadStatus = 'none' | 'pending' | 'processing' | 'ready' | 'failed';
-
-export interface AiSummary {
-  title: string;
-  objectives: string[];
-  summary: string;
-  difficulty: 'beginner' | 'intermediate' | 'advanced';
-  keyTakeaway: string;
-}
-
+// Accept both uppercase (from Java enum) and lowercase
+export type UploadStatus =
+  | 'NONE' | 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED'
+  | 'none' | 'pending' | 'processing' | 'ready' | 'failed';
+ 
 export interface Course {
   id: string;
   title: string;
-  description: string;
+  description?: string;
   instructorId: string;
   instructorName: string;
   videoUrl?: string;
-  videoDuration: number;       // seconds
+  videoDuration: number;
   thumbnailUrl?: string;
   uploadStatus: UploadStatus;
-  aiSummary?: AiSummary;
+  aiSummary?: string;
   kbIngested: boolean;
   isPublished: boolean;
   createdAt: string;
   updatedAt: string;
 }
-
+ 
 export interface PageResponse<T> {
   content: T[];
   totalElements: number;
   totalPages: number;
   size: number;
-  number: number;             // current page (0-indexed)
+  number: number;
   first: boolean;
   last: boolean;
 }
-
+ 
 export interface CreateCourseRequest {
   title: string;
   description?: string;
 }
-
+ 
 export interface UpdateCourseRequest {
   title?: string;
   description?: string;
   isPublished?: boolean;
 }
-
+ 
 export interface UploadUrlResponse {
   uploadUrl: string;
   s3Key: string;
   expiresInSeconds: number;
 }
-
+ 
 // ── Enrollment ─────────────────────────────────────────────────
 export interface Enrollment {
   id: string;
@@ -101,7 +96,7 @@ export interface Enrollment {
   completedAt?: string;
   completed: boolean;
 }
-
+ 
 // ── Progress ───────────────────────────────────────────────────
 export interface Progress {
   userId: string;
@@ -114,12 +109,12 @@ export interface Progress {
   completedAt?: string;
   source: 'redis' | 'database';
 }
-
+ 
 export interface UpdateProgressRequest {
   currentTimeSecs: number;
   durationSecs: number;
 }
-
+ 
 // ── AI ─────────────────────────────────────────────────────────
 export interface Citation {
   chunkId: string;
@@ -127,7 +122,7 @@ export interface Citation {
   similarityScore: number;
   excerpt: string;
 }
-
+ 
 export interface Recommendation {
   courseId: string;
   courseTitle: string;
@@ -135,3 +130,5 @@ export interface Recommendation {
   aiReason: string;
   similarityScore: number;
 }
+ 
+ 

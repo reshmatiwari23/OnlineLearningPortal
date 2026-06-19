@@ -1,57 +1,46 @@
 package com.olp.course.config;
-
+ 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.Environment;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
-import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
-
-import java.util.Arrays;
-
+ 
 /**
  * Security config for course-service.
  *
- * Same pattern as auth-service:
  * JWT validation is done at API Gateway — not here.
- * This service is only reachable from the ALB inside the VPC.
+ * All requests arriving at this service are already authenticated.
+ * Role checking (instructor vs learner) is done in CourseService
+ * using the x-user-role header injected by API Gateway.
+ *
+ * Locally: Vite proxy forwards requests without JWT — we permit all.
  */
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
-
-    private final Environment environment;
-
-    public SecurityConfig(Environment environment) {
-        this.environment = environment;
-    }
-
+ 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-
-        boolean isLocal = Arrays.asList(environment.getActiveProfiles()).contains("local");
-
         http
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(session ->
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> {
-                auth.requestMatchers("/actuator/health").permitAll();
-                auth.requestMatchers("/actuator/info").permitAll();
-                if (isLocal) {
-                    auth.requestMatchers("/h2-console/**").permitAll();
-                }
-                auth.anyRequest().permitAll(); // API Gateway enforces auth
-            });
-
-        if (isLocal) {
-            http.headers(headers ->
-                headers.frameOptions(HeadersConfigurer.FrameOptionsConfig::sameOrigin));
-        }
-
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/actuator/**").permitAll()
+                .requestMatchers("/h2-console/**").permitAll()
+                // All course API requests permitted — role checking done in service layer
+                .anyRequest().permitAll()
+            )
+            .headers(headers -> headers
+                .frameOptions(frame -> frame.disable()) // needed for H2 console
+            );
+ 
         return http.build();
     }
 }
+ 
+ 

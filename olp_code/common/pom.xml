@@ -43,7 +43,11 @@
             <artifactId>jjwt-jackson</artifactId>
             <scope>runtime</scope>
         </dependency>
-
+<!-- Jackson — for @JsonInclude annotation --> 
+        <dependency>  
+            <groupId>com.fasterxml.jackson.core</groupId>     
+            <artifactId>jackson-annotations</artifactId> 
+        </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
