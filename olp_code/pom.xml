@@ -39,7 +39,7 @@
         <mapstruct.version>1.5.5.Final</mapstruct.version>
         <testcontainers.version>1.19.3</testcontainers.version>
         <postgresql.version>42.7.1</postgresql.version>
-        <flyway.version>9.22.3</flyway.version>
+        <flyway.version>10.10.0</flyway.version>
 
         <!-- AWS SDK version — only used when aws profile is active -->
         <aws-sdk.version>2.25.11</aws-sdk.version>
