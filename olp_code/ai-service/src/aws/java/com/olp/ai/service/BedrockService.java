@@ -23,10 +23,6 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * Real Bedrock implementation — active on aws profile only.
- * Implements BedrockPort so controllers can inject without AWS SDK dependency.
- */
 @Service
 @Profile("!local")
 @RequiredArgsConstructor
@@ -60,11 +56,14 @@ public class BedrockService implements BedrockPort {
     @Override
     public List<Citation> invokeWithRAG(String question, String sessionId, SseEmitter emitter) {
         List<Citation> citations = new ArrayList<>();
+
         streamingExecutor.submit(() -> {
             try {
                 RetrieveRequest retrieveRequest = RetrieveRequest.builder()
                         .knowledgeBaseId(knowledgeBaseId)
-                        .retrievalQuery(KnowledgeBaseQuery.builder().text(question).build())
+                        .retrievalQuery(KnowledgeBaseQuery.builder()
+                                .text(question)
+                                .build())
                         .retrievalConfiguration(KnowledgeBaseRetrievalConfiguration.builder()
                                 .vectorSearchConfiguration(
                                         KnowledgeBaseVectorSearchConfiguration.builder()
@@ -76,54 +75,43 @@ public class BedrockService implements BedrockPort {
                 RetrieveResponse retrieveResponse = agentClient.retrieve(retrieveRequest);
                 StringBuilder context = new StringBuilder();
 
-                for (RetrievedReference ref : retrieveResponse.retrievalResults()) {
-                    if (ref.score() >= similarityThreshold) {
-                        String chunkText = ref.content().text();
+                for (KnowledgeBaseRetrievalResult result : retrieveResponse.retrievalResults()) {
+                    Double score = result.score();
+                    if (score != null && score >= similarityThreshold) {
+                        String chunkText = result.content().text();
                         context.append(chunkText).append("\n\n");
                         citations.add(Citation.builder()
-                                .chunkId(ref.location().toString())
-                                .similarityScore(ref.score())
+                                .chunkId(result.location().toString())
+                                .similarityScore(score)
                                 .excerpt(chunkText.substring(0, Math.min(200, chunkText.length())))
                                 .build());
                     }
                 }
 
-                String systemPrompt = "You are an expert course assistant. Answer questions ONLY based on the provided course transcript context. If the answer is not in the context, say you don't have enough information.";
+                String systemPrompt = "You are an expert course assistant. Answer questions ONLY based on the provided course transcript context.";
                 String userPrompt = context.isEmpty() ? question
                         : "Context:\n" + context + "\nQuestion: " + question;
+
                 String requestBody = buildClaudeRequest(systemPrompt, userPrompt, 1000);
 
-                InvokeModelWithResponseStreamRequest streamRequest =
-                        InvokeModelWithResponseStreamRequest.builder()
-                                .modelId(sonnetModel)
-                                .body(SdkBytes.fromString(requestBody, StandardCharsets.UTF_8))
-                                .contentType("application/json")
-                                .accept("application/json")
-                                .build();
+                InvokeModelRequest invokeRequest = InvokeModelRequest.builder()
+                        .modelId(sonnetModel)
+                        .body(SdkBytes.fromString(requestBody, StandardCharsets.UTF_8))
+                        .contentType("application/json")
+                        .accept("application/json")
+                        .build();
 
-                bedrockClient.invokeModelWithResponseStream(streamRequest,
-                        InvokeModelWithResponseStreamResponseHandler.builder()
-                                .subscriber(InvokeModelWithResponseStreamResponseHandler
-                                        .Visitor.builder()
-                                        .onChunk(chunk -> {
-                                            try {
-                                                JsonNode chunkJson = objectMapper.readTree(
-                                                        chunk.bytes().asUtf8String());
-                                                String token = chunkJson.path("delta")
-                                                        .path("text").asText("");
-                                                if (!token.isEmpty()) {
-                                                    emitter.send(SseEmitter.event()
-                                                            .data(token).name("token"));
-                                                }
-                                            } catch (IOException e) {
-                                                log.error("SSE send error: {}", e.getMessage());
-                                            }
-                                        })
-                                        .build())
-                                .build());
+                InvokeModelResponse invokeResponse = bedrockClient.invokeModel(invokeRequest);
+                JsonNode responseJson = objectMapper.readTree(invokeResponse.body().asUtf8String());
+                String responseText = responseJson.path("content").get(0).path("text").asText();
+
+                for (String word : responseText.split(" ")) {
+                    emitter.send(SseEmitter.event().data(word + " ").name("token"));
+                }
 
                 emitter.send(SseEmitter.event()
-                        .data(objectMapper.writeValueAsString(citations)).name("citations"));
+                        .data(objectMapper.writeValueAsString(citations))
+                        .name("citations"));
                 emitter.complete();
 
             } catch (Exception e) {
@@ -131,9 +119,12 @@ public class BedrockService implements BedrockPort {
                 try {
                     emitter.send(SseEmitter.event().data("Error occurred").name("error"));
                     emitter.complete();
-                } catch (IOException ioEx) { emitter.completeWithError(ioEx); }
+                } catch (IOException ioEx) {
+                    emitter.completeWithError(ioEx);
+                }
             }
         });
+
         return citations;
     }
 
@@ -142,16 +133,22 @@ public class BedrockService implements BedrockPort {
         try {
             ObjectNode requestBody = objectMapper.createObjectNode();
             requestBody.put("inputText", text);
+
             InvokeModelRequest request = InvokeModelRequest.builder()
                     .modelId(titanEmbeddingsModel)
-                    .body(SdkBytes.fromString(objectMapper.writeValueAsString(requestBody),
+                    .body(SdkBytes.fromString(
+                            objectMapper.writeValueAsString(requestBody),
                             StandardCharsets.UTF_8))
-                    .contentType("application/json").accept("application/json").build();
+                    .contentType("application/json")
+                    .accept("application/json")
+                    .build();
+
             InvokeModelResponse response = bedrockClient.invokeModel(request);
             JsonNode responseJson = objectMapper.readTree(response.body().asUtf8String());
             List<Double> embedding = new ArrayList<>();
             responseJson.path("embedding").forEach(v -> embedding.add(v.asDouble()));
             return embedding;
+
         } catch (Exception e) {
             log.error("Titan embedding error: {}", e.getMessage());
             throw new RuntimeException("Failed to generate embedding", e);
@@ -161,7 +158,7 @@ public class BedrockService implements BedrockPort {
     @Override
     public String rankRecommendations(String userProfile, String candidates) {
         try {
-            String systemPrompt = "You are a learning path advisor. Select top 3 courses and give personalised reasons. Respond ONLY with valid JSON: {\"recommendations\":[{\"courseId\":\"uuid\",\"reason\":\"reason\"}]}";
+            String systemPrompt = "You are a learning path advisor. Select top 3 courses. Respond ONLY with JSON: {\"recommendations\":[{\"courseId\":\"uuid\",\"reason\":\"reason\"}]}";
             String requestBody = buildClaudeRequest(systemPrompt,
                     "Learner profile:\n" + userProfile + "\n\nCandidates:\n" + candidates, 800);
             return invokeClaudeSonnet(requestBody);
@@ -174,7 +171,8 @@ public class BedrockService implements BedrockPort {
     public String generateCourseSummary(String courseTitle, String transcriptText) {
         try {
             String truncated = transcriptText.length() > 50000
-                    ? transcriptText.substring(0, 50000) + "... [truncated]" : transcriptText;
+                    ? transcriptText.substring(0, 50000) + "... [truncated]"
+                    : transcriptText;
             String systemPrompt = "Generate a course summary. Respond ONLY with JSON: {\"title\":\"...\",\"objectives\":[],\"summary\":\"...\",\"difficulty\":\"beginner|intermediate|advanced\",\"keyTakeaway\":\"...\"}";
             String requestBody = buildClaudeRequest(systemPrompt,
                     "Course: " + courseTitle + "\n\nTranscript:\n" + truncated, 500);
@@ -188,17 +186,23 @@ public class BedrockService implements BedrockPort {
     public String generateNudgeMessage(String learnerName, String courseTitle,
                                        int percentComplete, int daysSinceLastWatch) {
         try {
-            String systemPrompt = "Write a 2-sentence motivational message for a learner. Be warm and encouraging. Under 50 words.";
-            String userMessage = String.format("Learner: %s\nCourse: %s\nProgress: %d%%\nDays inactive: %d",
+            String systemPrompt = "Write a 2-sentence motivational message. Be warm and encouraging. Under 50 words.";
+            String userMessage = String.format(
+                    "Learner: %s\nCourse: %s\nProgress: %d%%\nDays inactive: %d",
                     learnerName, courseTitle, percentComplete, daysSinceLastWatch);
             String requestBody = buildClaudeRequest(systemPrompt, userMessage, 100);
+
             InvokeModelRequest request = InvokeModelRequest.builder()
                     .modelId(haikuModel)
                     .body(SdkBytes.fromString(requestBody, StandardCharsets.UTF_8))
-                    .contentType("application/json").accept("application/json").build();
+                    .contentType("application/json")
+                    .accept("application/json")
+                    .build();
+
             InvokeModelResponse response = bedrockClient.invokeModel(request);
             JsonNode json = objectMapper.readTree(response.body().asUtf8String());
             return json.path("content").get(0).path("text").asText();
+
         } catch (Exception e) {
             return String.format("Hi %s, you're %d%% through %s — keep going!",
                     learnerName, percentComplete, courseTitle);
@@ -209,7 +213,9 @@ public class BedrockService implements BedrockPort {
         InvokeModelRequest request = InvokeModelRequest.builder()
                 .modelId(sonnetModel)
                 .body(SdkBytes.fromString(requestBody, StandardCharsets.UTF_8))
-                .contentType("application/json").accept("application/json").build();
+                .contentType("application/json")
+                .accept("application/json")
+                .build();
         InvokeModelResponse response = bedrockClient.invokeModel(request);
         JsonNode json = objectMapper.readTree(response.body().asUtf8String());
         return json.path("content").get(0).path("text").asText();
@@ -221,6 +227,7 @@ public class BedrockService implements BedrockPort {
         body.put("anthropic_version", "bedrock-2023-05-31");
         body.put("max_tokens", maxTokens);
         body.put("system", systemPrompt);
+
         var messages = objectMapper.createArrayNode();
         var userMsg = objectMapper.createObjectNode();
         userMsg.put("role", "user");
@@ -232,6 +239,7 @@ public class BedrockService implements BedrockPort {
         userMsg.set("content", content);
         messages.add(userMsg);
         body.set("messages", messages);
+
         return objectMapper.writeValueAsString(body);
     }
 }
