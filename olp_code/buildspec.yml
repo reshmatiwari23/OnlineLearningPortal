@@ -1,0 +1,40 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to ECR...
+      - aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 418272762620.dkr.ecr.ap-south-1.amazonaws.com
+      - REPO_URI=418272762620.dkr.ecr.ap-south-1.amazonaws.com
+
+  build:
+    commands:
+      - echo Building Maven with AWS profile...
+      - cd olp_code
+      - mvn clean package -Paws -DskipTests --no-transfer-progress
+      - cd ..
+
+      - echo Building Docker images...
+      - docker build -f olp_code/auth-service/Dockerfile -t $REPO_URI/olp/auth-service:latest olp_code/
+      - docker build -f olp_code/course-service/Dockerfile -t $REPO_URI/olp/course-service:latest olp_code/
+      - docker build -f olp_code/enrollment-service/Dockerfile -t $REPO_URI/olp/enrollment-service:latest olp_code/
+      - docker build -f olp_code/progress-service/Dockerfile -t $REPO_URI/olp/progress-service:latest olp_code/
+      - docker build -f olp_code/ai-service/Dockerfile -t $REPO_URI/olp/ai-service:latest olp_code/
+
+  post_build:
+    commands:
+      - echo Pushing images to ECR...
+      - docker push $REPO_URI/olp/auth-service:latest
+      - docker push $REPO_URI/olp/course-service:latest
+      - docker push $REPO_URI/olp/enrollment-service:latest
+      - docker push $REPO_URI/olp/progress-service:latest
+      - docker push $REPO_URI/olp/ai-service:latest
+
+      - echo Deploying to ECS...
+      - aws ecs update-service --cluster olp-cluster --service auth-service --force-new-deployment --region ap-south-1
+      - aws ecs update-service --cluster olp-cluster --service course-service --force-new-deployment --region ap-south-1
+      - aws ecs update-service --cluster olp-cluster --service enrollment-service --force-new-deployment --region ap-south-1
+      - aws ecs update-service --cluster olp-cluster --service progress-service --force-new-deployment --region ap-south-1
+      - aws ecs update-service --cluster olp-cluster --service ai-service --force-new-deployment --region ap-south-1
+
+      - echo All services deployed successfully!
