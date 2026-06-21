@@ -4,19 +4,15 @@ server:
 spring:
   application:
     name: course-service
-
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:olp_db}
+    url: jdbc:postgresql://${DB_HOST}:5432/${DB_NAME:olp_db}
     username: ${DB_USERNAME:olp_admin}
-    password: ${DB_PASSWORD:localpassword}
+    password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
       pool-name: course-service-pool
       maximum-pool-size: 10
       minimum-idle: 2
-      connection-timeout: 30000
-      idle-timeout: 600000
-
   jpa:
     hibernate:
       ddl-auto: validate
@@ -24,25 +20,18 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-
   flyway:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: true
-    validate-on-migrate: true
 
-# ── AWS S3 configuration ─────────────────────────────────────────
 aws:
   region: ${AWS_REGION:ap-south-1}
   s3:
-    videos-bucket: ${S3_VIDEOS_BUCKET:olp-videos-local}
-    presigned-url-expiry-minutes: 15   # presigned URL valid for 15 minutes
-
-# ── Pagination defaults ──────────────────────────────────────────
-pagination:
-  default-page-size: 12
-  max-page-size: 50
+    videos-bucket: ${S3_VIDEOS_BUCKET:olp-videos-418272762620}
+    presigned-url-expiry-minutes: 15
+  cloudfront:
+    domain: ${CLOUDFRONT_DOMAIN:}
 
 management:
   endpoints:
@@ -56,4 +45,4 @@ management:
 logging:
   level:
     root: INFO
-    com.olp: DEBUG
+    com.olp: INFO

@@ -1,66 +1,72 @@
 #!/bin/bash
-# ================================================================
-# deploy.sh — Build, push to ECR, and deploy to ECS
-#
+# =====================================================
+# deploy.sh — Build, push and deploy all OLP services
 # Usage:
-#   ./deploy.sh                    — deploy all services
-#   ./deploy.sh auth-service       — deploy one service only
-#
-# Prerequisites:
-#   - AWS CLI configured (aws configure)
-#   - Docker Desktop running
-#   - Replace ACCOUNT_ID and REGION below with your values
-# ================================================================
-
+#   ./deploy.sh              → deploy all 5 services
+#   ./deploy.sh auth-service → deploy one service only
+# =====================================================
 set -e
 
-ACCOUNT_ID="YOUR-AWS-ACCOUNT-ID"
+ACCOUNT_ID="418272762620"
 REGION="ap-south-1"
-ECR_REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 CLUSTER="olp-cluster"
-
+ECR_BASE="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 SERVICES=("auth-service" "course-service" "enrollment-service" "progress-service" "ai-service")
 
-# If a service name is passed, deploy only that one
 if [ -n "$1" ]; then
   SERVICES=("$1")
 fi
 
-echo "=== Logging in to ECR ==="
-aws ecr get-login-password --region $REGION | \
-  docker login --username AWS --password-stdin $ECR_REGISTRY
+echo "================================================="
+echo "OLP Deployment"
+echo "Account: $ACCOUNT_ID"
+echo "Region:  $REGION"
+echo "Services: ${SERVICES[*]}"
+echo "================================================="
 
-echo "=== Building Maven project with aws profile ==="
-mvn clean package -DskipTests -Paws
+echo ""
+echo "Step 1 — Logging in to ECR..."
+aws ecr get-login-password --region "$REGION" | \
+  docker login --username AWS --password-stdin "$ECR_BASE"
+echo "ECR login successful"
 
-for SERVICE in "${SERVICES[@]}"; do
+echo ""
+echo "Step 2 — Building with Maven -Paws..."
+mvn clean package -Paws -DskipTests --no-transfer-progress
+echo "Maven build successful"
+
+echo ""
+echo "Step 3 — Building and pushing Docker images..."
+for svc in "${SERVICES[@]}"; do
   echo ""
-  echo "=== Deploying $SERVICE ==="
+  echo "--- $svc ---"
+  IMAGE_URI="$ECR_BASE/olp/$svc:latest"
 
-  # Build Docker image
-  echo "Building Docker image..."
-  docker build -t olp/$SERVICE -f $SERVICE/Dockerfile .
+  echo "Building: $IMAGE_URI"
+  docker build -f "$svc/Dockerfile" -t "$IMAGE_URI" .
 
-  # Tag for ECR
-  docker tag olp/$SERVICE $ECR_REGISTRY/olp/$SERVICE:latest
-
-  # Push to ECR
   echo "Pushing to ECR..."
-  docker push $ECR_REGISTRY/olp/$SERVICE:latest
+  docker push "$IMAGE_URI"
+  echo "Pushed: $IMAGE_URI"
 
-  # Force ECS to deploy the new image
-  echo "Updating ECS service..."
+  echo "Deploying to ECS..."
   aws ecs update-service \
-    --cluster $CLUSTER \
-    --service $SERVICE \
+    --cluster "$CLUSTER" \
+    --service "$svc" \
     --force-new-deployment \
-    --region $REGION \
-    --query 'service.serviceName' \
+    --region "$REGION" \
+    --query "service.serviceName" \
     --output text
 
-  echo "✓ $SERVICE deployed"
+  echo "$svc deployed"
 done
 
 echo ""
-echo "=== All deployments triggered ==="
-echo "Monitor progress: https://console.aws.amazon.com/ecs/home?region=$REGION#/clusters/$CLUSTER/services"
+echo "================================================="
+echo "Deployment complete!"
+echo ""
+echo "Monitor logs:"
+for svc in "${SERVICES[@]}"; do
+  echo "  aws logs tail /olp/$svc --follow --region $REGION"
+done
+echo "================================================="

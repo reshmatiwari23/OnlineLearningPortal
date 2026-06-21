@@ -4,56 +4,32 @@ server:
 spring:
   application:
     name: auth-service
-
-  # ── Database connection ──────────────────────────────────────────
-  # DB_HOST, DB_USERNAME, DB_PASSWORD are injected as environment variables.
-  # Locally:  set these in your VS Code launch.json or .env file.
-  # On ECS:   injected from Secrets Manager via task definition env vars.
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:olp_db}
+    url: jdbc:postgresql://${DB_HOST}:5432/${DB_NAME:olp_db}
     username: ${DB_USERNAME:olp_admin}
-    password: ${DB_PASSWORD:localpassword}
+    password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
-
     hikari:
       pool-name: auth-service-pool
-      maximum-pool-size: 10        # max 10 connections to RDS per service instance
-      minimum-idle: 2              # keep 2 connections ready at all times
-      connection-timeout: 30000    # 30 seconds to get a connection from pool
-      idle-timeout: 600000         # close idle connections after 10 minutes
-      max-lifetime: 1800000        # recycle connections every 30 minutes
-
-  # ── JPA / Hibernate ─────────────────────────────────────────────
+      maximum-pool-size: 10
+      minimum-idle: 2
   jpa:
     hibernate:
-      ddl-auto: validate           # Flyway manages the schema — Hibernate only validates it
-    show-sql: false                # set to true temporarily if you need to debug SQL
+      ddl-auto: validate
+    show-sql: false
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-        default_schema: public
-
-  # ── Flyway — runs V1__init.sql automatically on startup ─────────
   flyway:
     enabled: true
     locations: classpath:db/migration
-    baseline-on-migrate: true      # safe to run against a DB that already has tables
-    validate-on-migrate: true
+    baseline-on-migrate: true
 
-# ── Amazon Cognito ───────────────────────────────────────────────
-# Set COGNITO_USER_POOL_ID and COGNITO_CLIENT_ID as environment variables.
 cognito:
   region: ${COGNITO_REGION:ap-south-1}
-  user-pool-id: ${COGNITO_USER_POOL_ID:ap-south-1_CHANGE_ME}
-  client-id: ${COGNITO_CLIENT_ID:CHANGE_ME}
-  jwks-uri: https://cognito-idp.${cognito.region}.amazonaws.com/${cognito.user-pool-id}/.well-known/jwks.json
+  user-pool-id: ${COGNITO_USER_POOL_ID}
+  client-id: ${COGNITO_CLIENT_ID}
 
-# ── Security ─────────────────────────────────────────────────────
-security:
-  bcrypt-strength: 12              # BCrypt cost factor — higher = slower (more secure)
-
-# ── Spring Actuator — for ALB health checks ──────────────────────
 management:
   endpoints:
     web:
@@ -62,16 +38,8 @@ management:
   endpoint:
     health:
       show-details: always
-  info:
-    env:
-      enabled: true
 
-# ── Logging ──────────────────────────────────────────────────────
 logging:
   level:
     root: INFO
-    com.olp: DEBUG
-    org.springframework.security: INFO
-    org.hibernate.SQL: INFO
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+    com.olp: INFO

@@ -4,50 +4,32 @@ server:
 spring:
   application:
     name: ai-service
-
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
+      host: ${REDIS_HOST}
       port: ${REDIS_PORT:6379}
-      # FIX: ElastiCache requires TLS — set REDIS_SSL=true on ECS
       ssl:
-        enabled: ${REDIS_SSL:false}
-      # FIX: ElastiCache auth token — set REDIS_PASSWORD on ECS
+        enabled: ${REDIS_SSL:true}
       password: ${REDIS_PASSWORD:}
       timeout: 2000ms
-      lettuce:
-        pool:
-          max-active: 10
-          max-idle: 5
-          min-idle: 1
 
-# ── AWS Bedrock ───────────────────────────────────────────────────
 bedrock:
   region: ${BEDROCK_REGION:us-east-1}
   models:
     sonnet: claude-sonnet-4-6
-    haiku:  claude-haiku-4-5-20251001
+    haiku: claude-haiku-4-5-20251001
     titan-embeddings: amazon.titan-embed-text-v2:0
   knowledge-base:
-    id: ${BEDROCK_KB_ID:placeholder-kb-id}
+    id: ${BEDROCK_KB_ID:placeholder}
     similarity-threshold: 0.75
     max-results: 5
-  cost:
-    daily-alarm-usd: 40
-    daily-throttle-usd: 50
 
-# ── AWS General ───────────────────────────────────────────────────
 aws:
   region: ${AWS_REGION:ap-south-1}
   dynamodb:
     region: ${DYNAMODB_REGION:ap-south-1}
     sessions-table: ${DYNAMODB_SESSIONS_TABLE:olp-ai-sessions}
     session-ttl-hours: 24
-
-# ── Cache TTLs ────────────────────────────────────────────────────
-cache:
-  recommendations-ttl-minutes: 60
-  search-ttl-minutes: 30
 
 management:
   endpoints:
@@ -61,4 +43,4 @@ management:
 logging:
   level:
     root: INFO
-    com.olp: DEBUG
+    com.olp: INFO
