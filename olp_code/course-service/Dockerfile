@@ -12,12 +12,13 @@ COPY common/src common/src
 COPY course-service/src course-service/src
 RUN mvn clean package -Paws -DskipTests -pl common,course-service --no-transfer-progress
 
-FROM amazoncorretto:17
+FROM amazoncorretto:17-al2023
 WORKDIR /app
-RUN addgroup -S olp && adduser -S olp -G olp
+RUN groupadd -r olp && useradd -r -g olp olp
 USER olp
 COPY --from=build /app/course-service/target/course-service-*.jar app.jar
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD wget -qO- http://localhost:8082/actuator/health || exit 1
 EXPOSE 8082
 ENTRYPOINT ["java","-XX:MaxRAMPercentage=75.0","-XX:+UseContainerSupport","-jar","app.jar"]
+
