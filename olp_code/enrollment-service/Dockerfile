@@ -12,7 +12,7 @@ COPY common/src common/src
 COPY enrollment-service/src enrollment-service/src
 RUN mvn clean package -Paws -DskipTests -pl common,enrollment-service --no-transfer-progress
 
-FROM eclipse-temurin:17-jre-alpine
+FROM public.ecr.aws/amazoncorretto/amazoncorretto:17-alpine
 WORKDIR /app
 RUN addgroup -S olp && adduser -S olp -G olp
 USER olp
