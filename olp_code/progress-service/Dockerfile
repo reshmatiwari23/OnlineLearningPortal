@@ -1,4 +1,4 @@
-FROM maven:3.9-eclipse-temurin-17 AS build
+FROM public.ecr.aws/docker/library/maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /app
 COPY pom.xml .
 COPY common/pom.xml common/pom.xml
@@ -12,7 +12,7 @@ COPY common/src common/src
 COPY progress-service/src progress-service/src
 RUN mvn clean package -Paws -DskipTests -pl common,progress-service --no-transfer-progress
 
-FROM amazoncorretto:17-al2023
+FROM public.ecr.aws/docker/library/amazoncorretto:17-al2023
 WORKDIR /app
 RUN groupadd -r olp && useradd -r -g olp olp
 USER olp
@@ -21,4 +21,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD wget -qO- http://localhost:8084/actuator/health || exit 1
 EXPOSE 8084
 ENTRYPOINT ["java","-XX:MaxRAMPercentage=75.0","-XX:+UseContainerSupport","-jar","app.jar"]
+
 
