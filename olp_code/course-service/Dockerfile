@@ -12,7 +12,7 @@ COPY common/src common/src
 COPY course-service/src course-service/src
 RUN mvn clean package -Paws -DskipTests -pl common,course-service --no-transfer-progress
 
-FROM public.ecr.aws/amazoncorretto/amazoncorretto:17-alpine
+FROM public.ecr.aws/corretto/corretto:17-alpine
 WORKDIR /app
 RUN addgroup -S olp && adduser -S olp -G olp
 USER olp
