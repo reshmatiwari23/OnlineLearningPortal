@@ -12,7 +12,7 @@ COPY common/src common/src
 COPY enrollment-service/src enrollment-service/src
 RUN mvn clean package -Paws -DskipTests -pl common,enrollment-service --no-transfer-progress
 
-FROM public.ecr.aws/corretto/corretto:17-alpine
+FROM amazoncorretto:17
 WORKDIR /app
 RUN addgroup -S olp && adduser -S olp -G olp
 USER olp
