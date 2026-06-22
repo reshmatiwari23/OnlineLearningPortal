@@ -22,3 +22,4 @@ ENTRYPOINT ["java","-XX:MaxRAMPercentage=75.0","-XX:+UseContainerSupport","-jar"
 
 
 
+
