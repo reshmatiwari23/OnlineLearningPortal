@@ -2,6 +2,7 @@ package com.olp.progress;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Online Learning Portal — Progress Service
@@ -17,6 +18,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * Handles: 2,000+ writes/second at 10K concurrent viewers
  */
 @SpringBootApplication
+@EnableScheduling
 public class ProgressServiceApplication {
 
     public static void main(String[] args) {
