@@ -8,26 +8,18 @@ import com.olp.common.dto.ApiResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.List;
 
-/**
- * REST controller for all AI/Bedrock features.
- *
- * All endpoints are prefixed with /ai.
- * API Gateway routes /ai/* to this service (port 8085).
- *
- * Endpoints:
- *   POST /ai/chat              — RAG course assistant (SSE streaming)
- *   GET  /ai/recommend         — personalised course recommendations
- *   GET  /ai/search            — semantic course search
- *   POST /ai/summary           — auto course summary (internal — Lambda calls this)
- *   POST /ai/nudge             — send progress nudge (internal — scheduler calls this)
- */
 @RestController
 @RequestMapping("/ai")
 @RequiredArgsConstructor
@@ -38,18 +30,9 @@ public class AiController {
     private final RecommendationService recommendationService;
     private final NudgeService nudgeService;
 
-    /**
-     * RAG Course Assistant — streams Claude's answer token by token.
-     *
-     * Response type: text/event-stream (SSE)
-     * Events:
-     *   - "token"     — each word/token as Claude generates it
-     *   - "citations" — JSON array of citations at the end
-     *   - "error"     — if something goes wrong
-     *
-     * The browser receives each token immediately — learner sees
-     * the answer being written in real time, like ChatGPT.
-     */
+    @Value("${course.service.url:http://olp-alb-1897172403.ap-south-1.elb.amazonaws.com}")
+    private String courseServiceUrl;
+
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chat(
             @Valid @RequestBody          ChatRequest request,
@@ -59,10 +42,8 @@ public class AiController {
         log.info("Chat request: userId={}, courseId={}, sessionId={}",
                 userId, request.getCourseId(), request.getSessionId());
 
-        // Timeout set to 5 minutes — generous for long AI responses
         SseEmitter emitter = new SseEmitter(300_000L);
 
-        // BedrockService handles streaming on a separate thread
         bedrockService.invokeWithRAG(
                 request.getQuestion(),
                 request.getSessionId(),
@@ -72,14 +53,6 @@ public class AiController {
         return emitter;
     }
 
-    /**
-     * Get personalised course recommendations.
-     * Results are cached in Redis for 1 hour per user.
-     *
-     * Query params:
-     *   enrolledTopics — comma-separated list of topics from completed courses
-     *   candidates     — JSON string of candidate courses (passed from course-service)
-     */
     @GetMapping("/recommend")
     public ResponseEntity<ApiResponse<List<RecommendationResponse>>> getRecommendations(
             @RequestHeader("x-user-id")   String userId,
@@ -93,31 +66,16 @@ public class AiController {
         return ResponseEntity.ok(ApiResponse.success(recommendations));
     }
 
-    /**
-     * Semantic course search using Titan Embeddings.
-     * Converts query to a vector and finds semantically similar courses.
-     * Results cached in Redis for 30 minutes per query.
-     */
     @GetMapping("/search")
     public ResponseEntity<ApiResponse<List<Double>>> semanticSearch(
             @RequestParam String query,
             @RequestHeader("x-user-id") String userId) {
 
         log.info("Semantic search: query='{}', userId={}", query, userId);
-
-        // Generate embedding for the search query
-        // The caller (frontend) sends this to OpenSearch for kNN search
-        // This keeps OpenSearch access in the ai-service only
         List<Double> embedding = bedrockService.generateEmbedding(query);
-
         return ResponseEntity.ok(ApiResponse.success(embedding));
     }
 
-    /**
-     * Generate an AI course summary from a transcript.
-     * INTERNAL endpoint — called by the kb-ingestion Lambda, not by the frontend.
-     * The Lambda sends the transcript text after Transcribe completes.
-     */
     @PostMapping("/summary")
     public ResponseEntity<ApiResponse<String>> generateSummary(
             @Valid @RequestBody SummaryRequest request) {
@@ -128,14 +86,40 @@ public class AiController {
                 request.getTranscriptText()
         );
 
+        // Save summary back to course-service
+        try {
+            HttpClient client = HttpClient.newHttpClient();
+
+            // Escape the summary JSON for embedding in another JSON object
+            String escapedSummary = summary
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
+
+            String body = "{\"aiSummary\": \"" + escapedSummary + "\", \"kbIngested\": true}";
+
+            HttpRequest saveRequest = HttpRequest.newBuilder()
+                .uri(URI.create(courseServiceUrl + "/api/courses/" + request.getCourseId()))
+                .header("Content-Type", "application/json")
+                .header("x-user-role", "instructor")
+                .header("x-user-id", "system")
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = client.send(saveRequest,
+                HttpResponse.BodyHandlers.ofString());
+            log.info("Summary saved to course: {}, status: {}",
+                request.getCourseId(), response.statusCode());
+
+        } catch (Exception e) {
+            log.warn("Could not save summary to course-service: {}", e.getMessage());
+        }
+
         return ResponseEntity.ok(ApiResponse.success(summary, "Summary generated"));
     }
 
-    /**
-     * Send a personalised progress nudge to a stalled learner.
-     * INTERNAL endpoint — called by the daily EventBridge scheduler.
-     * Not exposed to the public internet via API Gateway.
-     */
     @PostMapping("/nudge")
     public ResponseEntity<ApiResponse<Boolean>> sendNudge(
             @Valid @RequestBody NudgeRequest request) {

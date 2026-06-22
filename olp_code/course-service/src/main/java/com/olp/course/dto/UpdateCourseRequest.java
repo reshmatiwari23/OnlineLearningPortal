@@ -18,4 +18,10 @@ public class UpdateCourseRequest {
 
     // Instructor can manually publish/unpublish
     private Boolean isPublished;
+
+    // AI-generated summary (JSON string from Bedrock)
+    private String aiSummary;
+
+    // Whether the course KB has been ingested
+    private Boolean kbIngested;
 }
