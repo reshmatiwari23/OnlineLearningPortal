@@ -109,6 +109,16 @@ public class CourseService {
     }
 
     @Transactional
+    public CourseResponse updateAiSummary(UUID courseId, UpdateCourseRequest request) {
+        Course course = findCourseOrThrow(courseId);
+        if (request.getAiSummary() != null) course.setAiSummary(request.getAiSummary());
+        if (request.getKbIngested() != null) course.setKbIngested(request.getKbIngested());
+        course = courseRepository.save(course);
+        log.info("AI summary updated for course: {}", courseId);
+        return toResponse(course);
+    }
+
+    @Transactional
     public void deleteCourse(UUID courseId, String instructorId) {
         Course course = findCourseOwnedByInstructor(courseId, instructorId);
         courseRepository.delete(course);

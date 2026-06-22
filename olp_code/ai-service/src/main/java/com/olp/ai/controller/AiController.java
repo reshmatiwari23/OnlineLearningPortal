@@ -101,11 +101,10 @@ public class AiController {
             String body = "{\"aiSummary\": \"" + escapedSummary + "\", \"kbIngested\": true}";
 
             HttpRequest saveRequest = HttpRequest.newBuilder()
-                .uri(URI.create(courseServiceUrl + "/api/courses/" + request.getCourseId()))
+                .uri(URI.create(courseServiceUrl + "/api/courses/" + request.getCourseId() + "/ai-summary"))
                 .header("Content-Type", "application/json")
-                .header("x-user-role", "instructor")
-                .header("x-user-id", "system")
-                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .header("x-internal-service", "ai-service")
+                .method("PATCH", HttpRequest.BodyPublishers.ofString(body))
                 .build();
 
             HttpResponse<String> response = client.send(saveRequest,
