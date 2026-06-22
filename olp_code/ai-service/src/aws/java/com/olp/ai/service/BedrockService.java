@@ -53,44 +53,74 @@ public class BedrockService implements BedrockPort {
 
     private final ExecutorService streamingExecutor = Executors.newCachedThreadPool();
 
+    /**
+     * Checks if Knowledge Base is properly configured.
+     * Returns false if KB ID is placeholder or empty.
+     */
+    private boolean isKbConfigured() {
+        return knowledgeBaseId != null
+                && !knowledgeBaseId.isEmpty()
+                && !knowledgeBaseId.equals("placeholder");
+    }
+
     @Override
     public List<Citation> invokeWithRAG(String question, String sessionId, SseEmitter emitter) {
         List<Citation> citations = new ArrayList<>();
 
         streamingExecutor.submit(() -> {
             try {
-                RetrieveRequest retrieveRequest = RetrieveRequest.builder()
-                        .knowledgeBaseId(knowledgeBaseId)
-                        .retrievalQuery(KnowledgeBaseQuery.builder()
-                                .text(question)
-                                .build())
-                        .retrievalConfiguration(KnowledgeBaseRetrievalConfiguration.builder()
-                                .vectorSearchConfiguration(
-                                        KnowledgeBaseVectorSearchConfiguration.builder()
-                                                .numberOfResults(maxResults)
-                                                .build())
-                                .build())
-                        .build();
+                String context = "";
 
-                RetrieveResponse retrieveResponse = agentClient.retrieve(retrieveRequest);
-                StringBuilder context = new StringBuilder();
+                // Only query KB if properly configured
+                if (isKbConfigured()) {
+                    try {
+                        RetrieveRequest retrieveRequest = RetrieveRequest.builder()
+                                .knowledgeBaseId(knowledgeBaseId)
+                                .retrievalQuery(KnowledgeBaseQuery.builder()
+                                        .text(question)
+                                        .build())
+                                .retrievalConfiguration(KnowledgeBaseRetrievalConfiguration.builder()
+                                        .vectorSearchConfiguration(
+                                                KnowledgeBaseVectorSearchConfiguration.builder()
+                                                        .numberOfResults(maxResults)
+                                                        .build())
+                                        .build())
+                                .build();
 
-                for (KnowledgeBaseRetrievalResult result : retrieveResponse.retrievalResults()) {
-                    Double score = result.score();
-                    if (score != null && score >= similarityThreshold) {
-                        String chunkText = result.content().text();
-                        context.append(chunkText).append("\n\n");
-                        citations.add(Citation.builder()
-                                .chunkId(result.location().toString())
-                                .similarityScore(score)
-                                .excerpt(chunkText.substring(0, Math.min(200, chunkText.length())))
-                                .build());
+                        RetrieveResponse retrieveResponse = agentClient.retrieve(retrieveRequest);
+                        StringBuilder contextBuilder = new StringBuilder();
+
+                        for (KnowledgeBaseRetrievalResult result : retrieveResponse.retrievalResults()) {
+                            Double score = result.score();
+                            if (score != null && score >= similarityThreshold) {
+                                String chunkText = result.content().text();
+                                contextBuilder.append(chunkText).append("\n\n");
+                                citations.add(Citation.builder()
+                                        .chunkId(result.location().toString())
+                                        .similarityScore(score)
+                                        .excerpt(chunkText.substring(0, Math.min(200, chunkText.length())))
+                                        .build());
+                            }
+                        }
+                        context = contextBuilder.toString();
+                    } catch (Exception e) {
+                        log.warn("KB query failed, falling back to direct Claude: {}", e.getMessage());
                     }
+                } else {
+                    log.info("Knowledge Base not configured — using Claude directly");
                 }
 
-                String systemPrompt = "You are an expert course assistant. Answer questions ONLY based on the provided course transcript context.";
-                String userPrompt = context.isEmpty() ? question
-                        : "Context:\n" + context + "\nQuestion: " + question;
+                // Build prompt — use KB context if available, otherwise answer directly
+                String systemPrompt;
+                String userPrompt;
+
+                if (!context.isEmpty()) {
+                    systemPrompt = "You are an expert course assistant. Answer questions based on the provided course transcript context. Be helpful and concise.";
+                    userPrompt = "Context:\n" + context + "\n\nQuestion: " + question;
+                } else {
+                    systemPrompt = "You are an expert AWS and cloud computing course assistant. Answer questions about AWS services, DevOps practices, and cloud computing concepts. Be helpful, accurate and concise. If asked about specific course content you don't have access to, provide general expert knowledge on the topic.";
+                    userPrompt = question;
+                }
 
                 String requestBody = buildClaudeRequest(systemPrompt, userPrompt, 1000);
 
@@ -105,6 +135,7 @@ public class BedrockService implements BedrockPort {
                 JsonNode responseJson = objectMapper.readTree(invokeResponse.body().asUtf8String());
                 String responseText = responseJson.path("content").get(0).path("text").asText();
 
+                // Stream response word by word
                 for (String word : responseText.split(" ")) {
                     emitter.send(SseEmitter.event().data(word + " ").name("token"));
                 }
