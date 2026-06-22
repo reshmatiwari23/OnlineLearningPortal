@@ -6,39 +6,40 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import type { Course } from '../../types';
 import styles from './Instructor.module.css';
- 
+
 const markCourseReady = (courseId: string, durationSecs: number) =>
   api.patch(`/api/courses/${courseId}/upload-status?status=ready&durationSecs=${durationSecs}`);
- 
+
 const publishCourse = (courseId: string, publish: boolean) =>
   api.put(`/api/courses/${courseId}`, { isPublished: publish });
- 
+
 export default function InstructorDashboardPage() {
   const [courses,    setCourses]    = useState<Course[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [showCreate, setShowCreate] = useState(false);
- 
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
   const [title,       setTitle]       = useState('');
   const [desc,        setDesc]        = useState('');
   const [creating,    setCreating]    = useState(false);
   const [createError, setCreateError] = useState('');
- 
+
   const [uploadCourseId, setUploadCourseId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStatus,   setUploadStatus]   = useState<'idle'|'uploading'|'done'|'error'>('idle');
   const [uploadMsg,      setUploadMsg]      = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
- 
+
   const isLocal = window.location.hostname === 'localhost';
- 
+
   const fetchCourses = () =>
     courseService.getMyCourses()
       .then(p => setCourses(p.content))
       .catch(e => console.error('Failed to load courses:', e))
       .finally(() => setLoading(false));
- 
+
   useEffect(() => { fetchCourses(); }, []);
- 
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) { setCreateError('Title is required'); return; }
@@ -61,7 +62,7 @@ export default function InstructorDashboardPage() {
       setCreating(false);
     }
   };
- 
+
   const handlePublish = async (course: Course) => {
     try {
       await publishCourse(course.id, !course.isPublished);
@@ -70,18 +71,32 @@ export default function InstructorDashboardPage() {
       console.error('Publish failed:', err);
     }
   };
- 
+
+  const handleDelete = async (course: Course) => {
+    if (!confirm(`Are you sure you want to delete "${course.title}"? This cannot be undone.`)) return;
+    setDeletingId(course.id);
+    try {
+      await courseService.remove(course.id);
+      setCourses(prev => prev.filter(c => c.id !== course.id));
+    } catch (err) {
+      console.error('Delete failed:', err);
+      alert('Failed to delete course. Please try again.');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const handleFileSelect = async (courseId: string, file: File) => {
     if (!file.type.startsWith('video/')) {
       alert('Please select a video file (MP4, MOV, AVI)');
       return;
     }
- 
+
     setUploadCourseId(courseId);
     setUploadStatus('uploading');
     setUploadProgress(0);
     setUploadMsg('');
- 
+
     try {
       if (isLocal) {
         setUploadMsg('Local mode — simulating upload...');
@@ -114,7 +129,7 @@ export default function InstructorDashboardPage() {
       setUploadMsg('❌ Upload failed. Please try again.');
     }
   };
- 
+
   return (
     <div className={styles.page}>
       <div className="container">
@@ -137,7 +152,7 @@ export default function InstructorDashboardPage() {
             + Create course
           </Button>
         </div>
- 
+
         {loading ? (
           <div className={styles.center}><div className="spinner" /></div>
         ) : courses.length === 0 ? (
@@ -153,9 +168,9 @@ export default function InstructorDashboardPage() {
             {courses.map(c => (
               <div key={c.id}>
                 <CourseCard course={c} showStatus />
- 
+
                 <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
- 
+
                   {/* Upload video button */}
                   <Button
                     size="sm"
@@ -170,7 +185,7 @@ export default function InstructorDashboardPage() {
                   >
                     📤 Upload video
                   </Button>
- 
+
                   {/* Publish / Unpublish button */}
                   <Button
                     size="sm"
@@ -179,7 +194,18 @@ export default function InstructorDashboardPage() {
                   >
                     {c.isPublished ? '📝 Unpublish' : '🚀 Publish'}
                   </Button>
- 
+
+                  {/* Delete button */}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={deletingId === c.id}
+                    onClick={() => handleDelete(c)}
+                    style={{ color: 'var(--red, #DC2626)', borderColor: 'var(--red, #DC2626)' }}
+                  >
+                    🗑️ Delete
+                  </Button>
+
                   {/* Local only — mark ready without uploading */}
                   {isLocal && c.uploadStatus !== 'ready' && (
                     <Button
@@ -194,7 +220,7 @@ export default function InstructorDashboardPage() {
                     </Button>
                   )}
                 </div>
- 
+
                 {uploadCourseId === c.id && uploadStatus === 'uploading' && (
                   <div style={{ marginTop: 8 }}>
                     <div className={styles.uploadProgress}>
@@ -214,7 +240,7 @@ export default function InstructorDashboardPage() {
             ))}
           </div>
         )}
- 
+
         <input
           type="file"
           accept="video/*"
@@ -227,7 +253,7 @@ export default function InstructorDashboardPage() {
           }}
         />
       </div>
- 
+
       {/* Create course modal */}
       {showCreate && (
         <div className={styles.overlay} onClick={() => setShowCreate(false)}>
@@ -287,5 +313,3 @@ export default function InstructorDashboardPage() {
     </div>
   );
 }
- 
- 
