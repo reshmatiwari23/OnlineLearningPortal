@@ -295,7 +295,7 @@ export default function CourseDetailPage() {
         </div>
       </div>
  
-      {canWatch && course.kbIngested && <AiChat courseId={course.id} />}
+      {canWatch &&  <AiChat courseId={course.id} />}
     </div>
   );
 }

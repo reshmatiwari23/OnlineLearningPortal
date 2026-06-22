@@ -4,8 +4,8 @@ import styles from './CourseCard.module.css';
 
 interface Props {
   course: Course;
-  progress?: number;     // 0-100, shown on learner cards
-  showStatus?: boolean;  // show upload status on instructor cards
+  progress?: number;
+  showStatus?: boolean;
 }
 
 function formatDuration(seconds: number): string {
@@ -15,8 +15,22 @@ function formatDuration(seconds: number): string {
   return `${m} min`;
 }
 
+function getAiSummaryText(aiSummary: string | undefined): string {
+  if (!aiSummary) return '';
+  try {
+    const s = typeof aiSummary === 'string' ? JSON.parse(aiSummary) : aiSummary;
+    if (s?.difficulty && s?.summary) {
+      return `${s.difficulty} · ${String(s.summary).slice(0, 80)}…`;
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
 export default function CourseCard({ course, progress, showStatus }: Props) {
   const navigate = useNavigate();
+  const summaryText = getAiSummaryText(course.aiSummary);
 
   return (
     <div
@@ -39,17 +53,17 @@ export default function CourseCard({ course, progress, showStatus }: Props) {
 
         {showStatus && (
           <span className={`badge badge-${
-            course.uploadStatus === 'ready'      ? 'green' :
-            course.uploadStatus === 'processing' ? 'amber' :
-            course.uploadStatus === 'failed'     ? 'red'   : 'teal'
+            course.uploadStatus?.toUpperCase() === 'READY'      ? 'green' :
+            course.uploadStatus?.toUpperCase() === 'PROCESSING' ? 'amber' :
+            course.uploadStatus?.toUpperCase() === 'FAILED'     ? 'red'   : 'teal'
           }`}>
             {course.uploadStatus}
           </span>
         )}
 
-        {course.aiSummary && (
+        {summaryText && (
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-            {course.aiSummary.difficulty} · {course.aiSummary.summary.slice(0, 80)}…
+            {summaryText}
           </p>
         )}
 
