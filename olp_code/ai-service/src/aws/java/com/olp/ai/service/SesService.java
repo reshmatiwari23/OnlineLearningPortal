@@ -19,7 +19,7 @@ public class SesService implements SesPort {
 
     private final SesClient sesClient;
 
-    private static final String FROM_EMAIL = "learning@olp.example.com";
+    private static final String FROM_EMAIL = "reshma.tiwari9@gmail.com";
 
     @Override
     public void sendEmail(String toAddress, String subject, String htmlBody) {
