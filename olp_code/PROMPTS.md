@@ -21,12 +21,19 @@ To modify a file, copy the prompt, change the relevant part, and regenerate.
 Project:    Online Learning Portal
 Stack:      Java 17, Spring Boot 3.2.0, Maven multi-module
 Database:   RDS PostgreSQL 15 (AWS ap-south-1)
-Cache:      ElastiCache Redis 7.x
+Cache:      ElastiCache Redis 7.x (TLS + AUTH)
 Auth:       Amazon Cognito User Pool + JWT RS256
-Storage:    Amazon S3
-AI:         AWS Bedrock (Claude Sonnet 4.6, Titan Embeddings v2)
-Container:  ECS Fargate (deployed via Docker)
+Storage:    Amazon S3 (olp-videos + olp-assets)
+CDN:        Amazon CloudFront (OAC for videos, WAF with 3 managed rules)
+AI:         AWS Bedrock (Claude 3 Sonnet, Claude 3 Haiku, Titan Embeddings v2)
+Container:  ECS Fargate (deployed via Docker, ECR)
+CI/CD:      AWS CodeBuild → ECR → ECS
+Queue:      Amazon SQS (progress writes + video processing)
+Serverless: AWS Lambda (video processor, S3 trigger)
+Email:      Amazon SES (nudge emails)
+NoSQL:      Amazon DynamoDB (AI sessions, TTL 24h)
 Region:     ap-south-1 (Mumbai)
+Bedrock Region: ap-south-1 (active models: claude-3-sonnet, claude-3-haiku)
 ```
 
 ---
@@ -57,6 +64,7 @@ Dependency versions to lock (dependencyManagement):
 - mapstruct: 1.5.5.Final
 - testcontainers: 1.19.3
 - aws-sdk-java-v2 (BOM): 2.21.0
+- flyway: 10.10.0 (IMPORTANT: use 10.x not 9.x — required for Spring Boot 3.2)
 
 Plugin versions:
 - spring-boot-maven-plugin: 3.2.0
@@ -65,6 +73,8 @@ Plugin versions:
 Java version: 17
 Packaging: pom (parent)
 GroupId: com.olp
+
+IMPORTANT: Use Flyway 10.10.0 — NOT 9.22.3. Spring Boot 3.2 requires Flyway 10.x.
 ```
 
 ---
@@ -167,6 +177,8 @@ Dependencies needed:
 
 Include spring-boot-maven-plugin so it builds a runnable fat JAR.
 Main class: com.olp.auth.AuthServiceApplication
+
+IMPORTANT: flyway version must be 10.10.0 from parent POM.
 ```
 
 ---
@@ -210,13 +222,20 @@ Cognito:
   client-id: ${COGNITO_CLIENT_ID:placeholder}
   jwks-uri: https://cognito-idp.${cognito.region}.amazonaws.com/${cognito.user-pool-id}/.well-known/jwks.json
 
+IMPORTANT: Cognito app client must be created WITHOUT a client secret.
+Use USER_PASSWORD_AUTH flow. The client-id used is the one without secret.
+Token expiry extended to 24 hours for demo via:
+  aws cognito-idp update-user-pool-client
+    --explicit-auth-flows ALLOW_USER_PASSWORD_AUTH ALLOW_REFRESH_TOKEN_AUTH ALLOW_USER_SRP_AUTH
+    --access-token-validity 24 --id-token-validity 24
+    --token-validity-units AccessToken=hours,IdToken=hours
+
 Security:
   bcrypt-strength: 12
 
 Logging:
   level root: INFO
   level com.olp: DEBUG
-  pattern: structured JSON (include timestamp, level, logger, message, traceId)
 
 Actuator:
   expose: health, info, metrics
@@ -250,8 +269,6 @@ Indexes:
   idx_users_role (index on role)
 
 Also create a trigger to auto-update updated_at on every UPDATE.
-
-Add a comment on the table explaining its purpose.
 ```
 
 ---
@@ -294,7 +311,6 @@ Java 17, Spring Boot 3.2, Lombok, Jakarta Validation.
 4. AuthResponse.java — response DTO
    - Fields: String token, String userId, String email,
              String name, String role, long expiresIn
-   - expiresIn = 86400 (24 hours in seconds)
    - Lombok: @Data @Builder @AllArgsConstructor @NoArgsConstructor
 
 5. UserRepository.java — Spring Data JPA repository
@@ -323,10 +339,12 @@ Java 17, Spring Boot 3.2, AWS SDK v2 for Cognito.
    - Method: createUser(String email, String name, String role)
      → calls adminCreateUser on the User Pool
      → sets email_verified attribute to true
-     → sets custom:role attribute
+     → sets custom:role attribute to the role value
      → returns the Cognito username (sub)
    - Method: authenticateUser(String email, String password)
      → calls initiateAuth with USER_PASSWORD_AUTH flow
+     → IMPORTANT: this flow requires the Cognito app client to have
+       NO client secret and explicit auth flow ALLOW_USER_PASSWORD_AUTH
      → returns the IdToken (JWT) from AuthenticationResult
    - Method: deleteUser(String email) — for rollback on signup failure
    - Handle CognitoIdentityProviderException and rethrow as
@@ -367,42 +385,38 @@ Java 17, Spring Boot 3.2, Spring Security 6.
 
 1. AuthController.java
    - @RestController @RequestMapping("/api/auth")
-   - Inject AuthService
    - POST /signup — accepts @Valid SignupRequest, returns ApiResponse<AuthResponse>
      HTTP 201 on success
-   - POST /login  — accepts @Valid LoginRequest,  returns ApiResponse<AuthResponse>
+   - POST /login  — accepts @Valid LoginRequest, returns ApiResponse<AuthResponse>
      HTTP 200 on success
    - Both endpoints are PUBLIC (no JWT required)
 
 2. SecurityConfig.java
    - @Configuration @EnableWebSecurity
-   - SecurityFilterChain bean:
-     - disable CSRF (REST API, stateless)
-     - sessionManagement: STATELESS
-     - permit: /api/auth/**, /actuator/health, /actuator/info
-     - all other requests: authenticated
+   - disable CSRF, sessionManagement: STATELESS
+   - permit: /api/auth/**, /actuator/health, /actuator/info
    - PasswordEncoder bean: BCryptPasswordEncoder(12)
-   - Do NOT configure JWT filter here — JWT validation is done
-     at API Gateway (Lambda Authoriser), not inside the service
+   - Do NOT configure JWT filter — JWT validation is done at ALB level
 
 3. AwsConfig.java
    - @Configuration
-   - CognitoIdentityProviderClient bean
-     - region from @Value cognito.region
-     - uses DefaultCredentialsProvider (reads from
-       ~/.aws/credentials locally, IAM role on ECS)
+   - CognitoIdentityProviderClient bean using DefaultCredentialsProvider
+   - IAM role on ECS handles credentials automatically
 
 4. GlobalExceptionHandler.java
    - @RestControllerAdvice
-   - Handle ResourceNotFoundException     → 404 with ApiResponse.error()
-   - Handle DuplicateResourceException    → 409 with ApiResponse.error()
-   - Handle UnauthorisedException         → 401 with ApiResponse.error()
-   - Handle MethodArgumentNotValidException → 400 with field errors list
-   - Handle generic Exception             → 500 with ApiResponse.error()
+   - Handle ResourceNotFoundException     → 404
+   - Handle DuplicateResourceException    → 409
+   - Handle UnauthorisedException         → 401
+   - Handle MethodArgumentNotValidException → 400
+   - Handle generic Exception             → 500
 
 5. AuthServiceApplication.java
-   - @SpringBootApplication
-   - main method
+   - @SpringBootApplication main method
+
+IMPORTANT: auth-service task role needs AmazonCognitoPowerUser IAM policy.
+NAT Gateway is required for ECS tasks to reach Cognito endpoints
+(Cognito does not have a VPC endpoint).
 ```
 
 ---
@@ -412,75 +426,7 @@ Java 17, Spring Boot 3.2, Spring Security 6.
 **Files generated:**
 - `auth-service/src/test/java/com/olp/auth/AuthControllerTest.java`
 
-**Prompt:**
-```
-Generate JUnit 5 integration tests for auth-service AuthController.
-Use MockMvc, Mockito, Spring Boot Test.
-Do NOT use Testcontainers yet — mock the service layer.
-
-Test cases:
-1. signup_success
-   POST /api/auth/signup with valid body
-   Mock AuthService.signup() to return a valid AuthResponse
-   Assert: HTTP 201, response body has token field, success = true
-
-2. signup_duplicate_email
-   POST /api/auth/signup with existing email
-   Mock AuthService.signup() to throw DuplicateResourceException
-   Assert: HTTP 409, success = false, message contains "already exists"
-
-3. signup_invalid_email
-   POST /api/auth/signup with malformed email
-   Assert: HTTP 400, success = false (validation fails before service is called)
-
-4. signup_short_password
-   POST /api/auth/signup with 5-char password
-   Assert: HTTP 400
-
-5. login_success
-   POST /api/auth/login with valid credentials
-   Mock AuthService.login() to return a valid AuthResponse
-   Assert: HTTP 200, token present
-
-6. login_wrong_password
-   POST /api/auth/login
-   Mock AuthService.login() to throw UnauthorisedException
-   Assert: HTTP 401
-
-Use @WebMvcTest(AuthController.class) to load only the web layer.
-Use @MockBean for AuthService.
-```
-
----
-
-## How to add new prompts
-
-When you generate a new service, add a new section:
-
-## PROMPT 0XX — [service-name] [component]
-
-**Files generated:** list the files
-
-**Prompt:**
-\```
-paste the exact prompt used
-\```
-
----
-
-## Dependency versions reference
-
-```
-Spring Boot:          3.2.0
-Java:                 17
-PostgreSQL driver:    42.7.1
-Flyway:               9.22.3
-Lombok:               1.18.30
-JJWT:                 0.12.3
-AWS SDK v2 BOM:       2.21.0
-Testcontainers:       1.19.3
-MapStruct:            1.5.5.Final
-```
+**Prompt:** (Same as original)
 
 ---
 
@@ -488,287 +434,490 @@ MapStruct:            1.5.5.Final
 
 **Files generated:** `course-service/pom.xml`
 
-**Prompt:**
-```
-Generate a Maven POM for the 'course-service' module of the online-learning-portal
-multi-module project.
-
-Parent: com.olp:online-learning-portal:1.0.0
-ArtifactId: course-service  Port: 8082
-
-Dependencies: common, spring-boot-starter-web, spring-boot-starter-data-jpa,
-spring-boot-starter-security, spring-boot-starter-validation,
-spring-boot-starter-actuator, postgresql, h2 (runtime), flyway-core,
-flyway-database-postgresql, lombok, software.amazon.awssdk:s3,
-software.amazon.awssdk:secretsmanager, jackson-databind,
-spring-boot-starter-test, spring-security-test, testcontainers:postgresql
-
-Main class: com.olp.course.CourseServiceApplication
-```
+**Prompt:** (Same as original, use Flyway 10.10.0)
 
 ---
 
 ## PROMPT 012 — course-service Entity, DTOs, Repository
 
-**Files generated:**
-- `course-service/src/main/java/com/olp/course/entity/Course.java`
-- `course-service/src/main/java/com/olp/course/dto/CreateCourseRequest.java`
-- `course-service/src/main/java/com/olp/course/dto/UpdateCourseRequest.java`
-- `course-service/src/main/java/com/olp/course/dto/CourseResponse.java`
-- `course-service/src/main/java/com/olp/course/dto/UploadUrlResponse.java`
-- `course-service/src/main/java/com/olp/course/repository/CourseRepository.java`
-
-**Prompt:**
-```
-Generate JPA entity and DTOs for course-service.
-Table: courses with fields id(UUID), title, description, instructor_id(UUID),
-instructor_name, video_url, video_duration(int seconds), thumbnail_url,
-ai_summary(JSONB/JsonNode), kb_ingested(boolean), is_published(boolean),
-created_at, updated_at.
-
-UNIQUE constraint on (title, instructor_id).
-Repository needs: findAllByIsPublishedTrue(Pageable),
-findAllByInstructorId(UUID, Pageable), findByIdAndInstructorId(UUID, UUID),
-existsByTitleAndInstructorId(String, UUID),
-searchByTitle(@Query LIKE, Pageable).
-```
+**Files generated:** (Same as original)
 
 ---
 
 ## PROMPT 013 — course-service Service and Controller
 
 **Files generated:**
-- `course-service/src/main/java/com/olp/course/service/S3Service.java`
+- `course-service/src/main/java/com/olp/course/service/S3Port.java` (interface)
+- `course-service/src/main/java/com/olp/course/service/S3Service.java` (aws profile)
 - `course-service/src/main/java/com/olp/course/service/CourseService.java`
 - `course-service/src/main/java/com/olp/course/controller/CourseController.java`
 
 **Prompt:**
 ```
 Generate service and controller for course-service.
-Endpoints: GET /api/courses (paginated), GET /api/courses/my (instructor),
-GET /api/courses/search?keyword, GET /api/courses/{id},
-POST /api/courses (instructor only), PUT /api/courses/{id} (owner only),
-DELETE /api/courses/{id} (owner only),
-POST /api/courses/{id}/upload-url (owner only, returns S3 presigned PUT URL).
+Java 17, Spring Boot 3.2, AWS SDK v2 S3.
 
-Security: reads x-user-id and x-user-role headers from API Gateway.
-Never validates JWT directly.
-S3Service generates presigned PUT URL using AWS SDK v2 S3Presigner.
+CourseService must handle:
+1. CRUD operations with ownership checks (instructor can only modify own courses)
+2. S3 presigned URL generation — sets course.videoUrl = s3Key, status = PENDING
+3. Upload status update — when READY, convert S3 key to CloudFront URL:
+   if (currentUrl != null && !currentUrl.startsWith("http")) {
+     course.setVideoUrl("https://" + cloudfrontDomain + "/" + currentUrl);
+   }
+4. AI summary save — PUT /api/courses/{id} accepts aiSummary field
+5. Internal endpoint — PATCH /api/courses/{id}/ai-summary
+   - Header: x-internal-service: ai-service (bypass ownership check)
+   - Updates aiSummary and kbIngested fields only
+
+CourseController endpoints:
+  GET  /api/courses                     — paginated published courses
+  GET  /api/courses/my                  — instructor's courses
+  GET  /api/courses/search?keyword      — search
+  GET  /api/courses/{id}               — single course
+  POST /api/courses                     — create (instructor only)
+  PUT  /api/courses/{id}               — update (owner only, accepts aiSummary)
+  DELETE /api/courses/{id}             — delete (owner only)
+  POST /api/courses/{id}/upload-url    — get S3 presigned URL
+  PATCH /api/courses/{id}/upload-status — update status (called by Lambda)
+  PATCH /api/courses/{id}/ai-summary   — internal AI summary save
+
+Environment variables:
+  CLOUDFRONT_DOMAIN: d1ka6o9mjvg4i9.cloudfront.net
+  S3_VIDEOS_BUCKET: olp-videos-418272762620
+
+IMPORTANT: The presigned URL upload uses XMLHttpRequest in frontend (not axios)
+to avoid header conflicts with S3 presigned URLs.
 ```
 
 ---
 
 ## PROMPT 014 — enrollment-service (complete)
 
-**Files generated:**
-- `enrollment-service/pom.xml`
-- `enrollment-service/src/main/resources/application.yml`
-- `enrollment-service/src/main/resources/application-local.yml`
-- `enrollment-service/src/main/resources/db/migration/V3__create_enrollments.sql`
-- `enrollment-service/src/main/resources/db/migration-h2/V3__create_enrollments.sql`
-- `enrollment-service/src/main/java/com/olp/enrollment/entity/Enrollment.java`
-- `enrollment-service/src/main/java/com/olp/enrollment/dto/EnrollmentResponse.java`
-- `enrollment-service/src/main/java/com/olp/enrollment/repository/EnrollmentRepository.java`
-- `enrollment-service/src/main/java/com/olp/enrollment/service/EnrollmentService.java`
-- `enrollment-service/src/main/java/com/olp/enrollment/controller/EnrollmentController.java`
-- `enrollment-service/src/main/java/com/olp/enrollment/config/SecurityConfig.java`
-- `enrollment-service/src/main/java/com/olp/enrollment/exception/GlobalExceptionHandler.java`
-- `enrollment-service/src/main/java/com/olp/enrollment/EnrollmentServiceApplication.java`
-- `enrollment-service/src/test/java/com/olp/enrollment/EnrollmentControllerTest.java`
-
-**Prompt:**
-```
-Generate complete enrollment-service for Online Learning Portal.
-Port: 8083. Java 17, Spring Boot 3.2.
-
-Table: enrollments (id UUID, course_id UUID, user_id UUID,
-enrolled_at TIMESTAMPTZ, completed_at TIMESTAMPTZ)
-UNIQUE constraint: (course_id, user_id)
-
-Endpoints:
-  POST   /api/enrollment/{courseId}         — enrol (learner only, 409 on duplicate)
-  DELETE /api/enrollment/{courseId}         — unenrol (404 if not enrolled)
-  GET    /api/enrollment/my                 — list all enrollments for user
-  GET    /api/enrollment/{courseId}/status  — boolean: is user enrolled?
-  GET    /api/enrollment/{courseId}/count   — learner count for a course
-
-Double-check pattern: app-level existsByCourseIdAndUserId check for friendly 409,
-plus catch DataIntegrityViolationException for race condition safety.
-Reads x-user-id and x-user-role headers from API Gateway.
-Only learners (role=user) can enrol and unenrol.
-H2 local profile, MockS3 not needed (no S3 calls in this service).
-```
+**Files generated:** (Same as original)
 
 ---
 
 ## PROMPT 015 — upload_status column + UploadStatus enum
 
-**Files generated/updated:**
-- `course-service/src/main/resources/db/migration/V4__add_upload_status.sql`
-- `course-service/src/main/resources/db/migration-h2/V4__add_upload_status.sql`
-- `course-service/src/main/java/com/olp/course/entity/UploadStatus.java`  (new)
-- `course-service/src/main/java/com/olp/course/entity/Course.java`  (added uploadStatus field)
-- `course-service/src/main/java/com/olp/course/dto/CourseResponse.java`  (added uploadStatus)
-- `course-service/src/main/java/com/olp/course/service/CourseService.java`  (set PENDING on URL issue, added updateUploadStatus)
-- `course-service/src/main/java/com/olp/course/controller/CourseController.java`  (added PATCH /{id}/upload-status)
+**Files generated:** (Same as original)
 
-**Prompt:**
+**IMPORTANT ADDITION — V6 migration fix:**
+
+```sql
+-- V6__fix_upload_status_constraint.sql
+-- Fix: Java enum values are uppercase (READY, PENDING) but constraint was lowercase
+ALTER TABLE courses DROP CONSTRAINT IF EXISTS courses_upload_status_check;
+ALTER TABLE courses ADD CONSTRAINT courses_upload_status_check
+  CHECK (upload_status IN ('NONE','PENDING','PROCESSING','READY','FAILED',
+                           'none','pending','processing','ready','failed'));
 ```
-Add upload_status lifecycle tracking to course-service.
 
-Add V4 Flyway migration: ALTER TABLE courses ADD COLUMN upload_status VARCHAR(50)
-DEFAULT 'none' with CHECK constraint (none/pending/processing/ready/failed).
-
-Add UploadStatus Java enum with values NONE, PENDING, PROCESSING, READY, FAILED.
-
-Add uploadStatus field to Course entity (@Enumerated(STRING)).
-Add uploadStatus to CourseResponse DTO.
-
-Update CourseService.generateUploadUrl() to set status = PENDING when URL is issued.
-Add CourseService.updateUploadStatus(courseId, status, durationSecs):
-  - Sets the new status
-  - Sets videoDuration when status = READY
-  - Clears videoUrl when status = FAILED (so instructor can re-upload)
-
-Add PATCH /api/courses/{id}/upload-status endpoint to CourseController.
-This is an internal endpoint called by the video-processor Lambda.
-```
+This migration was required because the Java UploadStatus enum uses uppercase
+values but the original SQL constraint only accepted lowercase.
 
 ---
 
 ## PROMPT 016 — progress-service (complete)
 
-**Files generated:**
-- All files under `progress-service/`
+**Files generated:** (Same as original, plus additions below)
 
-**Prompt:**
+**CRITICAL ADDITIONS not in original prompt:**
+
 ```
-Generate complete progress-service for Online Learning Portal.
-Port: 8084. Java 17, Spring Boot 3.2.
+1. SqsProgressConsumer.java — MISSING from original design, must be added
+   Location: src/aws/java/com/olp/progress/service/SqsProgressConsumer.java
+   
+   @Service @Profile("!local") @RequiredArgsConstructor @Slf4j
+   Uses @Scheduled(fixedDelay = 5000) — polls SQS every 5 seconds
+   Receives ProgressEvent messages from olp-progress-writes-queue
+   Calls progressService.persistProgressEvent(event) to upsert to RDS
+   Deletes message from queue after successful processing
+   
+2. ProgressServiceApplication.java — must add @EnableScheduling annotation
+   Without this, the @Scheduled consumer will not run.
 
-Write strategy:
-  HOT PATH  → Redis (synchronous, StringRedisTemplate, TTL 60s)
-  COLD PATH → RDS via SQS (async, fire-and-forget after Redis write)
+3. Redis security group fix:
+   olp-redis-sg must allow inbound TCP 6379 from olp-ecs-sg
+   (by default this rule was missing)
 
-Table: video_progress (id UUID, user_id UUID, course_id UUID,
-current_time_secs INT, duration_secs INT, percent_complete INT 0-100,
-last_updated_at TIMESTAMPTZ, completed_at TIMESTAMPTZ)
-UNIQUE(user_id, course_id)
+4. SQS permissions:
+   olp-progress-task-role needs AmazonSQSFullAccess policy
+```
 
-Redis key: progress:{userId}:{courseId} → percentComplete string
-
-Services:
-  RedisProgressService — writeProgress, readProgress, deleteProgress
-  SqsProgressPublisher — publish(ProgressEvent), fire-and-forget, swallows errors
-  ProgressService      — updateProgress (Redis + SQS), getProgress (Redis → RDS),
-                         getAllProgressForUser, getAllProgressForCourse,
-                         persistProgressEvent (SQS consumer UPSERT to RDS)
-
-Endpoints:
-  POST /api/progress/{courseId}         — update (Video.js every 5s)
-  GET  /api/progress/{courseId}         — read (Redis → RDS fallback)
-  GET  /api/progress/my                 — all for user
-  GET  /api/progress/{courseId}/all     — all learners for course (instructor only)
-
-Local profile: mock SqsClient logs + immediately calls persistProgressEvent
-to simulate the consumer. No real Redis needed — use embedded map.
-H2 in-memory database.
+**Consumer implementation:**
+```java
+@Scheduled(fixedDelay = 5000)
+public void pollQueue() {
+    ReceiveMessageRequest request = ReceiveMessageRequest.builder()
+        .queueUrl(queueUrl)
+        .maxNumberOfMessages(10)
+        .waitTimeSeconds(2)        // long polling
+        .visibilityTimeout(30)
+        .build();
+    
+    List<Message> messages = sqsClient.receiveMessage(request).messages();
+    for (Message message : messages) {
+        ProgressEvent event = objectMapper.readValue(message.body(), ProgressEvent.class);
+        progressService.persistProgressEvent(event);
+        sqsClient.deleteMessage(DeleteMessageRequest.builder()
+            .queueUrl(queueUrl)
+            .receiptHandle(message.receiptHandle())
+            .build());
+    }
+}
 ```
 
 ---
 
 ## PROMPT 017 — ai-service (complete)
 
-**Files generated:**
-- All files under `ai-service/`
+**Files generated:** (Same as original, with critical changes below)
 
-**Prompt:**
+**CRITICAL CHANGES from original design:**
+
 ```
-Generate complete ai-service for Online Learning Portal.
-Port: 8085. Java 17, Spring Boot 3.2.
+1. Bedrock region: us-east-1 → ap-south-1
+   The Claude 3 Sonnet and Haiku models are ACTIVE in ap-south-1.
+   In us-east-1 they show as LEGACY (blocked).
+   
+   application.yml:
+     bedrock:
+       region: ${BEDROCK_REGION:ap-south-1}
+       models:
+         sonnet: ${BEDROCK_MODEL_SONNET:anthropic.claude-3-sonnet-20240229-v1:0}
+         haiku: ${BEDROCK_MODEL_HAIKU:anthropic.claude-3-haiku-20240307-v1:0}
 
-This is the ONLY service with AWS Bedrock IAM permissions.
+2. BedrockService.invokeWithRAG() — skip KB when not configured:
+   private boolean isKbConfigured() {
+     return knowledgeBaseId != null
+       && !knowledgeBaseId.isEmpty()
+       && !knowledgeBaseId.equals("placeholder");
+   }
+   When KB not configured: use Claude directly as AWS expert assistant.
+   System prompt: "You are an expert AWS and cloud computing course assistant..."
+   This allows chat to work without expensive OpenSearch Serverless.
 
-AWS SDK dependencies:
-  - bedrockruntime (Claude + Titan direct API calls)
-  - bedrockagentruntime (Knowledge Base RAG retrieval)
-  - dynamodb (chat session history, 24h TTL)
-  - ses (nudge emails)
+3. Use synchronous invokeModel() NOT streaming:
+   InvokeModelResponse response = bedrockClient.invokeModel(request);
+   Then stream the response word by word via SSE SseEmitter.
+   (The streaming Bedrock API had issues with the SDK version used)
 
-Models:
-  - Claude Sonnet 4.6: RAG chat, recommendations, auto summary
-  - Claude Haiku 4.5: progress nudges (20x cheaper)
-  - Titan Embeddings v2: semantic search + recommendations vectors
+4. AiController.generateSummary() — auto-save to course-service:
+   After generating summary, call PATCH /api/courses/{courseId}/ai-summary
+   with header x-internal-service: ai-service to bypass ownership check.
+   
+5. NudgeService — SES requires:
+   - FROM email must be verified in SES
+   - TO email must be verified in SES sandbox mode
+   - olp-ai-task-role needs AmazonSESFullAccess policy
+   - FROM_EMAIL = "reshma.tiwari9@gmail.com" (verified identity)
 
-Features:
-  1. RAG Chat (SSE streaming): POST /ai/chat
-     - BedrockAgentRuntime KB retrieve (cosine ≥ 0.75, top-5 chunks)
-     - Augmented prompt → Claude Sonnet stream via SSE SseEmitter
-     - Citations [{chunkId, timestampSeconds, score, excerpt}]
-
-  2. Recommendations: GET /ai/recommend
-     - Build user profile text from enrolled topics
-     - Titan embed → kNN → Claude Sonnet ranks top-3 + reasons
-     - Redis cache rec:{userId} TTL 1h, invalidated on enrolment
-
-  3. Semantic Search: GET /ai/search
-     - Titan embed query → return 1536-dim vector (caller does kNN)
-
-  4. Auto Summary: POST /ai/summary (internal Lambda endpoint)
-     - Claude Sonnet JSON mode → {title, objectives[], summary, difficulty, keyTakeaway}
-
-  5. Progress Nudge: POST /ai/nudge (internal scheduler endpoint)
-     - Claude Haiku generates 2-sentence message
-     - SES sends HTML email
-
-Local profile: MockBedrockRuntimeClient (fake 1536-dim embedding),
-MockBedrockAgentRuntimeClient (returns 2 fake chunks),
-MockSesClient (logs instead of sending), MockDynamoDbClient.
+6. DynamoDB olp-ai-sessions table:
+   - Must be created separately (not auto-created)
+   - PAY_PER_REQUEST billing
+   - TTL on 'ttl' attribute (enabled)
+   - GSI: userId-index on userId field
+   - olp-ai-task-role needs AmazonDynamoDBFullAccess policy
 ```
 
 ---
 
 ## PROMPT 018 — React 18 Frontend (complete)
 
-**Location:** `olp-frontend/` (separate from the Spring Boot project)
+**Files generated:** (Same as original, with critical changes below)
+
+**CRITICAL CHANGES from original:**
+
+```
+1. aiService.ts — must add x-user-id and x-user-role headers:
+   The /ai/chat endpoint requires these headers from localStorage.
+   
+   const userStr = localStorage.getItem('olp_user');
+   let userId = '', userRole = 'user';
+   if (userStr) {
+     const u = JSON.parse(userStr);
+     userId = u.userId ?? '';
+     userRole = u.role ?? 'user';
+   }
+   
+   fetch('/ai/chat', {
+     headers: {
+       'Content-Type': 'application/json',
+       'Authorization': `Bearer ${token}`,
+       'Accept': 'text/event-stream',
+       'x-user-id': userId,      // ← REQUIRED
+       'x-user-role': userRole,  // ← REQUIRED
+     }
+   })
+
+2. aiService.ts — fix SSE parsing to handle event: prefix:
+   Track lastEvent variable, process data based on event type:
+   event:token → onToken(data + ' ')
+   event:citations → onCitations(JSON.parse(data))
+   event:error → onError(message)
+
+3. courseService.ts — uploadVideoToS3 must use XMLHttpRequest not axios:
+   Axios adds extra headers that conflict with S3 presigned URL signatures.
+   Use XMLHttpRequest with explicit Content-Type: file.type || 'video/mp4'
+
+4. CourseDetailPage.tsx — remove kbIngested check for AI Chat:
+   Change: {canWatch && course.kbIngested && <AiChat courseId={course.id} />}
+   To:     {canWatch && <AiChat courseId={course.id} />}
+
+5. InstructorDashboardPage.tsx — add Delete button:
+   Call courseService.remove(course.id) with confirmation dialog.
+   Show confirmation: "Are you sure you want to delete {title}?"
+
+6. VideoPlayer.tsx — smart progress intervals:
+   const getInterval = (duration: number) => {
+     if (duration <= 120) return 5000;   // <= 2 min: every 5s
+     if (duration <= 600) return 10000;  // <= 10 min: every 10s
+     return 15000;                        // > 10 min: every 15s
+   }
+   Also add seeked event and 25%/50%/75% milestone saves for short videos.
+
+7. .env file required:
+   VITE_API_BASE_URL=https://d1ka6o9mjvg4i9.cloudfront.net
+```
+
+---
+
+## PROMPT 019 — Lambda Video Processor (NEW — not in original design)
 
 **Files generated:**
-- `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`
-- `src/types/index.ts` — all TypeScript interfaces
-- `src/services/` — api.ts, authService, courseService, enrollmentService, aiService
-- `src/context/AuthContext.tsx` — global auth state + JWT storage
-- `src/styles/global.css` — CSS variables + resets
-- `src/components/layout/Navbar.tsx + .module.css`
-- `src/components/common/Button.tsx, Input.tsx + .module.css`
-- `src/components/course/CourseCard.tsx, VideoPlayer.tsx + .module.css`
-- `src/components/ai/AiChat.tsx + .module.css` — SSE streaming chat drawer
-- `src/pages/auth/LoginPage.tsx, SignupPage.tsx`
-- `src/pages/learner/CourseCataloguePage.tsx, CourseDetailPage.tsx, MyLearningPage.tsx`
-- `src/pages/instructor/InstructorDashboardPage.tsx`
-- `src/App.tsx` — router with protected routes
-- `src/main.tsx` — React entry point
+- `lambda/olp-video-processor/lambda_function.py`
 
 **Prompt:**
 ```
-Generate a complete React 18 + TypeScript + Vite frontend for an Online Learning Portal.
-Use plain CSS modules (no Tailwind). Use react-router-dom v6, axios, video.js.
+Generate an AWS Lambda function in Python 3.14 that:
 
-Pages:
-  /login        — LoginPage (email + password → POST /api/auth/login)
-  /signup       — SignupPage (name, email, password, role toggle learner/instructor)
-  /courses      — CourseCataloguePage (paginated grid, keyword search)
-  /courses/:id  — CourseDetailPage (VideoPlayer, enrol, progress bar, AI chat drawer)
-  /my-learning  — MyLearningPage (enrolled courses with progress)
-  /instructor   — InstructorDashboardPage (create course modal, upload video to S3)
+1. Is triggered by S3 PUT events on bucket olp-videos-418272762620
+2. Extracts the course ID from the S3 key path: videos/{courseId}/filename.mp4
+3. Estimates video duration from file size (1MB ≈ 1 minute for 360p)
+4. Calls PATCH /api/courses/{courseId}/upload-status?status=READY&durationSecs={n}
+   on the ALB: http://olp-alb-1897172403.ap-south-1.elb.amazonaws.com
+5. If the API call fails, marks the course as FAILED
+6. Uses only standard library (urllib.request, urllib.parse) — no boto3 needed
+7. Environment variable: ALB_URL (defaults to ALB endpoint)
 
-Key features:
-  - AuthContext with JWT stored in localStorage
-  - Protected routes redirect to /login if not authenticated
-  - VideoPlayer.tsx: Video.js player that reports progress every 5 seconds
-    via POST /api/progress/{courseId}
-  - AiChat.tsx: SSE streaming drawer that opens from a floating button,
-    shows tokens one by one as Claude generates them, shows citations at end
-  - Video upload: get S3 presigned URL → PUT directly to S3 with progress %
-  - Role-based navigation: instructors see My Courses, learners see My Learning
-  - Vite proxy: /api/* → localhost:8081-8084, /ai → localhost:8085
+S3 trigger configuration:
+  Bucket: olp-videos-418272762620
+  Event type: All object create events
+  Prefix: videos/
+  Suffix: .mp4
+
+IMPORTANT: Use top-level imports only — do NOT import urllib inside the function.
+Correct: import urllib.parse, import urllib.request at TOP of file.
+```
+
+---
+
+## PROMPT 020 — SQS Progress Consumer (NEW — not in original design)
+
+**Files generated:**
+- `progress-service/src/aws/java/com/olp/progress/service/SqsProgressConsumer.java`
+
+**Prompt:**
+```
+Generate an SQS consumer for progress-service in the Online Learning Portal.
+Java 17, Spring Boot 3.2, AWS SDK v2.
+
+@Service @Profile("!local") @RequiredArgsConstructor @Slf4j
+class SqsProgressConsumer
+
+Uses @Scheduled(fixedDelay = 5000) to poll every 5 seconds.
+Requires @EnableScheduling on ProgressServiceApplication.
+
+Injects:
+  SqsClient sqsClient
+  ObjectMapper objectMapper
+  ProgressService progressService
+  @Value aws.sqs.progress-queue-url String queueUrl
+
+pollQueue() method:
+  - ReceiveMessageRequest: maxNumberOfMessages=10, waitTimeSeconds=2, visibilityTimeout=30
+  - For each message: deserialize ProgressEvent, call persistProgressEvent(), delete message
+  - Log how many messages processed
+  - Catch exceptions per-message (don't stop processing other messages)
+  - Outer try-catch for SQS connection errors
+
+This consumer processes the 42 messages that accumulate in the queue
+and persists them to RDS PostgreSQL, enabling My Learning page to show
+correct progress percentages.
+```
+
+---
+
+## PROMPT 021 — buildspec.yml (CodeBuild)
+
+**Files generated:**
+- `olp_code/buildspec.yml`
+
+**Prompt:**
+```
+Generate AWS CodeBuild buildspec.yml for the Online Learning Portal
+multi-module Maven project.
+
+Requirements:
+- Java runtime: corretto17 (NOT openjdk — Corretto is AWS native)
+- Pre-build: login to ECR using aws ecr get-login-password
+- Build: mvn clean package -Paws -DskipTests for all 5 services
+  Build each service separately with -pl common,{service}
+- Docker build for each service using its Dockerfile
+- Post-build: push all images to ECR, force-redeploy all ECS services
+- ECR repo base: 418272762620.dkr.ecr.ap-south-1.amazonaws.com
+
+IMPORTANT: Docker base images must use ECR Public mirror (NOT Docker Hub):
+  Build stage:   public.ecr.aws/docker/library/maven:3.9-eclipse-temurin-17
+  Runtime stage: public.ecr.aws/docker/library/amazoncorretto:17-al2023
+  
+Reason: Docker Hub rate limits (429 Too Many Requests) in CodeBuild.
+ECR Public has no rate limits.
+
+ALSO: Remove USER/addgroup/adduser commands from Dockerfiles.
+amazoncorretto:17-al2023 does not have addgroup/useradd commands.
+```
+
+---
+
+## PROMPT 022 — Flyway V6 Migration (upload_status enum fix)
+
+**Files generated:**
+- `course-service/src/main/resources/db/migration/V6__fix_upload_status_constraint.sql`
+
+**Prompt:**
+```
+Generate a Flyway V6 SQL migration for PostgreSQL 15 to fix the upload_status
+column constraint in the courses table.
+
+Problem: Java UploadStatus enum values are uppercase (READY, PENDING, etc.)
+but the original V4 migration only allowed lowercase values.
+
+Solution: Drop the existing check constraint and recreate it to accept both
+uppercase and lowercase values for backward compatibility.
+
+SQL:
+ALTER TABLE courses DROP CONSTRAINT IF EXISTS courses_upload_status_check;
+ALTER TABLE courses ADD CONSTRAINT courses_upload_status_check
+  CHECK (upload_status IN (
+    'NONE','PENDING','PROCESSING','READY','FAILED',
+    'none','pending','processing','ready','failed'
+  ));
+```
+
+---
+
+## Architecture Decisions Made During Implementation
+
+### 1. API Gateway → ALB (Simplified)
+**Reason:** ALB handles path-based routing to 5 target groups. Injects x-user-id
+and x-user-role headers from Cognito JWT. API Gateway would add cost and
+complexity without significant benefit for internal microservices.
+
+### 2. Bedrock KB (OpenSearch Serverless) → Direct Claude
+**Reason:** OpenSearch Serverless minimum cost = 4 OCUs × $0.24/hr = $0.96/hr
+($700/month). For demo environment, Claude answers directly as an AWS expert.
+Production plan: Transcribe → S3 → KB ingestion Lambda → Bedrock KB → RAG.
+
+### 3. SQS Consumer Added
+**Reason:** Not in original design but required for My Learning progress to work.
+Progress-service published to SQS but nothing consumed it. Added
+SqsProgressConsumer with @Scheduled polling every 5 seconds.
+
+### 4. Lambda Video Processor
+**Reason:** Original design had this but implementation details were missing.
+Implemented as Python 3.14 Lambda with S3 trigger. Marks course READY
+automatically after video upload — no manual intervention needed.
+
+### 5. ECR Public Mirror for Docker
+**Reason:** Docker Hub rate limits (100 pulls/6h unauthenticated) caused 429
+errors in CodeBuild. Switched to public.ecr.aws/docker/library/ which has
+no rate limits for CodeBuild running in AWS.
+
+### 6. Health Check Grace Period 300s
+**Reason:** Spring Boot takes 90-130 seconds to start (loading JPA, Flyway,
+Redis connections). Default grace period caused ECS to kill tasks before they
+were ready. 300 seconds gives sufficient startup time.
+
+### 7. Token Expiry Extended to 24h
+**Reason:** Cognito default is 1 hour. During demo this caused frequent logouts.
+Extended via update-user-pool-client with 24h access/id token validity.
+IMPORTANT: Must also set explicit-auth-flows or the auth flow breaks.
+
+---
+
+## Dependency Versions Reference (FINAL)
+
+```
+Spring Boot:          3.2.0
+Java:                 17 (Amazon Corretto)
+PostgreSQL driver:    42.7.1
+Flyway:               10.10.0 (NOT 9.x — Spring Boot 3.2 requires 10.x)
+Lombok:               1.18.30
+JJWT:                 0.12.3
+AWS SDK v2 BOM:       2.21.0
+Testcontainers:       1.19.3
+MapStruct:            1.5.5.Final
+Video.js:             8.10.0
+React:                18.x
+Vite:                 5.x
+```
+
+---
+
+## AWS Resource IDs (for reference)
+
+```
+Account ID:           418272762620
+Region:               ap-south-1
+Cognito User Pool:    ap-south-1_oYypxwWMn
+Cognito Client ID:    4uigtgilqddo9hh5boturapojg (no secret)
+ALB DNS:              olp-alb-1897172403.ap-south-1.elb.amazonaws.com
+CloudFront:           d1ka6o9mjvg4i9.cloudfront.net (E1ZZJFURH0TXEK)
+ECR Base:             418272762620.dkr.ecr.ap-south-1.amazonaws.com
+S3 Videos:            olp-videos-418272762620
+S3 Assets:            olp-assets-418272762620
+RDS Endpoint:         olp-postgres.czageo4kkd1g.ap-south-1.rds.amazonaws.com
+Redis Endpoint:       master.olp-redis.0shmv9.aps1.cache.amazonaws.com:6379
+SQS Progress Queue:   https://sqs.ap-south-1.amazonaws.com/418272762620/olp-progress-writes-queue
+DynamoDB Table:       olp-ai-sessions
+Lambda:               olp-video-processor
+WAF ACL:              CreatedByCloudFront-34045166
+GitHub:               https://github.com/reshmatiwari23/OnlineLearningPortal
+```
+
+---
+
+## Demo Credentials
+
+```
+Instructor: reshma.tiwari9@gmail.com / Demo1234!
+Learner:    reshma.tiwari@cognizant.com / Demo1234!
+```
+
+---
+
+## Key Commands
+
+```bash
+# Scale down (save cost)
+for svc in auth-service course-service enrollment-service progress-service ai-service; do
+  aws ecs update-service --cluster olp-cluster --service $svc --desired-count 0 --region ap-south-1
+done
+
+# Scale up (before demo)
+for svc in auth-service course-service enrollment-service progress-service ai-service; do
+  aws ecs update-service --cluster olp-cluster --service $svc --desired-count 1 --region ap-south-1
+done
+
+# Delete NAT Gateway after presentation ($32/month saving)
+aws ec2 delete-nat-gateway --nat-gateway-id nat-095c89d1c79890688 --region ap-south-1
+
+# Frontend deploy
+cd olp_frontend
+echo "VITE_API_BASE_URL=https://d1ka6o9mjvg4i9.cloudfront.net" > .env
+npm run build
+aws s3 sync dist/ s3://olp-assets-418272762620/ --delete --exclude "index.html"
+aws s3 cp dist/index.html s3://olp-assets-418272762620/index.html --cache-control "no-cache, no-store, must-revalidate"
+aws cloudfront create-invalidation --distribution-id E1ZZJFURH0TXEK --paths "/*"
 ```
