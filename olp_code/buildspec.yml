@@ -25,13 +25,13 @@ phases:
   build:
     commands:
 
-      - echo "=== STEP 1 - Unit Tests + JaCoCo Coverage ==="
+      - echo "=== STEP 1 - Unit Tests + JaCoCo Coverage (aws profile) ==="
       - cd olp_code
-      - mvn verify -Plocal -DskipTests=false --no-transfer-progress -Dsurefire.failIfNoSpecifiedTests=false
+      - mvn verify -Paws -DskipTests=false --no-transfer-progress -Dsurefire.failIfNoSpecifiedTests=false
       - echo "--- Coverage Summary ---"
-      - for svc in auth-service course-service enrollment-service progress-service ai-service; do echo "  $svc coverage"; python3 -c "import csv; f=open('$svc/target/site/jacoco/jacoco.csv') if __import__('os').path.exists('$svc/target/site/jacoco/jacoco.csv') else None; print('  no data') if not f else [print(f'  line={int(sum(int(r.get(\"LINE_COVERED\",0)) for r in csv.DictReader(open(\"$svc/target/site/jacoco/jacoco.csv\")))/(sum(int(r.get(\"LINE_COVERED\",0))+int(r.get(\"LINE_MISSED\",0)) for r in csv.DictReader(open(\"$svc/target/site/jacoco/jacoco.csv\"))) or 1)*100)}%')]" 2>/dev/null || echo "  no coverage data for $svc"; done
+      - for svc in auth-service course-service enrollment-service progress-service ai-service; do if [ -f "$svc/target/site/jacoco/jacoco.csv" ]; then python3 -c "import csv; rows=list(csv.DictReader(open('$svc/target/site/jacoco/jacoco.csv'))); lc=sum(int(r.get('LINE_COVERED',0)) for r in rows); lm=sum(int(r.get('LINE_MISSED',0)) for r in rows); lp=int(lc/(lc+lm)*100) if lc+lm>0 else 0; print(f'  {\"✅\" if lp>=70 else \"⚠️ \"} $svc line={lp}%')"; else echo "  ⚠️  $svc no coverage data"; fi; done
 
-      - echo "=== STEP 2 - Build JARs (aws profile) ==="
+      - echo "=== STEP 2 - Build Production JARs ==="
       - mvn clean package -Paws -DskipTests --no-transfer-progress
       - cd ..
 
@@ -79,11 +79,6 @@ phases:
       - aws ecs register-task-definition --cli-input-json file:///tmp/taskdef-progress-service.json --region $REGION --query 'taskDefinition.taskDefinitionArn' --output text > /tmp/progress-arn.txt
       - aws ecs register-task-definition --cli-input-json file:///tmp/taskdef-ai-service.json --region $REGION --query 'taskDefinition.taskDefinitionArn' --output text > /tmp/ai-arn.txt
       - echo "Task definitions registered"
-      - cat /tmp/auth-arn.txt
-      - cat /tmp/course-arn.txt
-      - cat /tmp/enrollment-arn.txt
-      - cat /tmp/progress-arn.txt
-      - cat /tmp/ai-arn.txt
 
       - echo "=== STEP 6 - Create AppSpec files ==="
       - python3 olp_code/scripts/create_appspec.py auth-service 8081 $(cat /tmp/auth-arn.txt)
