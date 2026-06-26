@@ -102,11 +102,6 @@ reports:
       - "olp_code/**/target/surefire-reports/TEST-*.xml"
     file-format: JUNITXML
     discard-paths: no
-  olp-coverage-reports:
-    files:
-      - "olp_code/**/target/site/jacoco/jacoco.xml"
-    file-format: JUNITXML
-    discard-paths: no
 
 artifacts:
   files:
