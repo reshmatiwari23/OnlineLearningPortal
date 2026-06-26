@@ -1,5 +1,12 @@
 version: 0.2
 
+env:
+  variables:
+    REPO_URI: "418272762620.dkr.ecr.ap-south-1.amazonaws.com"
+    REGION: "ap-south-1"
+    CLUSTER: "olp-cluster"
+    APP_NAME: "olp-deploy"
+
 phases:
   install:
     runtime-versions:
@@ -10,37 +17,196 @@ phases:
       - echo Java version
       - java -version
       - echo Logging in to ECR...
-      - aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 418272762620.dkr.ecr.ap-south-1.amazonaws.com
-      - REPO_URI=418272762620.dkr.ecr.ap-south-1.amazonaws.com
+      - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $REPO_URI
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)
+      - IMAGE_TAG=${COMMIT_HASH:-latest}
+      - echo "Image tag = $IMAGE_TAG"
 
   build:
     commands:
-      - echo Building Maven with AWS profile...
+
+      # ── STEP 1: Run Unit Tests + JaCoCo Coverage ──────────────────────
+      - echo "=== STEP 1: Unit Tests + Coverage ==="
       - cd olp_code
+      - mvn verify -Plocal -DskipTests=false --no-transfer-progress -Dsurefire.failIfNoSpecifiedTests=false
+      - |
+        echo "--------------------------------------------"
+        echo "SERVICE               LINE%    BRANCH%"
+        echo "--------------------------------------------"
+        for svc in auth-service course-service enrollment-service progress-service ai-service; do
+          CSV="$svc/target/site/jacoco/jacoco.csv"
+          if [ -f "$CSV" ]; then
+            python3 - "$svc" "$CSV" << 'PYEOF'
+import sys, csv
+svc, filepath = sys.argv[1], sys.argv[2]
+lc = lm = bc = bm = 0
+with open(filepath) as f:
+    for row in csv.DictReader(f):
+        lc += int(row.get('LINE_COVERED', 0))
+        lm += int(row.get('LINE_MISSED', 0))
+        bc += int(row.get('BRANCH_COVERED', 0))
+        bm += int(row.get('BRANCH_MISSED', 0))
+lp = int(lc/(lc+lm)*100) if lc+lm > 0 else 0
+bp = int(bc/(bc+bm)*100) if bc+bm > 0 else 0
+icon = "✅" if lp >= 70 else "⚠️ "
+print(f"{icon} {svc:<22} {lp:>4}%    {bp:>4}%")
+PYEOF
+          else
+            echo "  ⚠️  $svc — no coverage data"
+          fi
+        done
+        echo "--------------------------------------------"
+
+      # ── STEP 2: Build Production JARs ─────────────────────────────────
+      - echo "=== STEP 2: Building Maven with AWS profile ==="
       - mvn clean package -Paws -DskipTests --no-transfer-progress
       - cd ..
 
-      - echo Building Docker images...
-      - docker build -f olp_code/auth-service/Dockerfile -t $REPO_URI/olp/auth-service:latest olp_code/
-      - docker build -f olp_code/course-service/Dockerfile -t $REPO_URI/olp/course-service:latest olp_code/
-      - docker build -f olp_code/enrollment-service/Dockerfile -t $REPO_URI/olp/enrollment-service:latest olp_code/
-      - docker build -f olp_code/progress-service/Dockerfile -t $REPO_URI/olp/progress-service:latest olp_code/
-      - docker build -f olp_code/ai-service/Dockerfile -t $REPO_URI/olp/ai-service:latest olp_code/
+      # ── STEP 3: Build Docker Images ───────────────────────────────────
+      - echo "=== STEP 3: Building Docker images ==="
+      - docker build -f olp_code/auth-service/Dockerfile       -t $REPO_URI/olp/auth-service:$IMAGE_TAG       -t $REPO_URI/olp/auth-service:latest       olp_code/
+      - docker build -f olp_code/course-service/Dockerfile     -t $REPO_URI/olp/course-service:$IMAGE_TAG     -t $REPO_URI/olp/course-service:latest     olp_code/
+      - docker build -f olp_code/enrollment-service/Dockerfile -t $REPO_URI/olp/enrollment-service:$IMAGE_TAG -t $REPO_URI/olp/enrollment-service:latest olp_code/
+      - docker build -f olp_code/progress-service/Dockerfile   -t $REPO_URI/olp/progress-service:$IMAGE_TAG   -t $REPO_URI/olp/progress-service:latest   olp_code/
+      - docker build -f olp_code/ai-service/Dockerfile         -t $REPO_URI/olp/ai-service:$IMAGE_TAG         -t $REPO_URI/olp/ai-service:latest         olp_code/
 
   post_build:
     commands:
-      - echo Pushing images to ECR...
+
+      # ── STEP 4: Push Images to ECR ────────────────────────────────────
+      - echo "=== STEP 4: Pushing images to ECR ==="
+      - docker push $REPO_URI/olp/auth-service:$IMAGE_TAG
       - docker push $REPO_URI/olp/auth-service:latest
+      - docker push $REPO_URI/olp/course-service:$IMAGE_TAG
       - docker push $REPO_URI/olp/course-service:latest
+      - docker push $REPO_URI/olp/enrollment-service:$IMAGE_TAG
       - docker push $REPO_URI/olp/enrollment-service:latest
+      - docker push $REPO_URI/olp/progress-service:$IMAGE_TAG
       - docker push $REPO_URI/olp/progress-service:latest
+      - docker push $REPO_URI/olp/ai-service:$IMAGE_TAG
       - docker push $REPO_URI/olp/ai-service:latest
 
-      - echo Deploying to ECS...
-      - aws ecs update-service --cluster olp-cluster --service auth-service --force-new-deployment --region ap-south-1
-      - aws ecs update-service --cluster olp-cluster --service course-service --force-new-deployment --region ap-south-1
-      - aws ecs update-service --cluster olp-cluster --service enrollment-service --force-new-deployment --region ap-south-1
-      - aws ecs update-service --cluster olp-cluster --service progress-service --force-new-deployment --region ap-south-1
-      - aws ecs update-service --cluster olp-cluster --service ai-service --force-new-deployment --region ap-south-1
+      # ── STEP 5: Register New Task Definition Revisions ────────────────
+      - echo "=== STEP 5: Registering task definitions ==="
+      - |
+        for svc in auth-service course-service enrollment-service progress-service ai-service; do
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster $CLUSTER --services $svc \
+            --region $REGION \
+            --query 'services[0].taskDefinition' --output text)
 
-      - echo All services deployed successfully!
+          aws ecs describe-task-definition \
+            --task-definition $TASK_DEF_ARN \
+            --region $REGION \
+            --query 'taskDefinition' > /tmp/${svc}-raw.json
+
+          python3 - "$svc" "$REPO_URI" "$IMAGE_TAG" << 'PYEOF'
+import json, sys
+svc, repo, tag = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(f'/tmp/{svc}-raw.json') as f:
+    td = json.load(f)
+for k in ['taskDefinitionArn','revision','status','requiresAttributes',
+          'compatibilities','registeredAt','registeredBy']:
+    td.pop(k, None)
+for c in td.get('containerDefinitions', []):
+    if c['name'] == svc:
+        c['image'] = f"{repo}/olp/{svc}:{tag}"
+with open(f'/tmp/taskdef-{svc}.json', 'w') as f:
+    json.dump(td, f, default=str)
+print(f"  taskdef-{svc}.json ready")
+PYEOF
+
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file:///tmp/taskdef-${svc}.json \
+            --region $REGION \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "  ✅ $svc → $NEW_ARN"
+          echo $NEW_ARN > /tmp/${svc}-arn.txt
+        done
+
+      # ── STEP 6: Create AppSpec Files ──────────────────────────────────
+      - echo "=== STEP 6: Creating AppSpec files ==="
+      - |
+        # Correct target group names matching actual AWS resources
+        declare -A TG_NAMES=(
+          [auth-service]="olp-auth-tg"
+          [course-service]="olp-course-tg"
+          [enrollment-service]="olp-enroll-tg"
+          [progress-service]="olp-progress-tg"
+          [ai-service]="olp-ai-tg"
+        )
+        declare -A PORTS=(
+          [auth-service]=8081
+          [course-service]=8082
+          [enrollment-service]=8083
+          [progress-service]=8084
+          [ai-service]=8085
+        )
+
+        for svc in auth-service course-service enrollment-service progress-service ai-service; do
+          NEW_ARN=$(cat /tmp/${svc}-arn.txt)
+          PORT=${PORTS[$svc]}
+          TG=${TG_NAMES[$svc]}
+          cat > /tmp/appspec-${svc}.yml << APPSPEC
+version: 0.0
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        TaskDefinition: "${NEW_ARN}"
+        LoadBalancerInfo:
+          ContainerName: "${svc}"
+          ContainerPort: ${PORT}
+        PlatformVersion: "1.4.0"
+APPSPEC
+          echo "  appspec-${svc}.yml → TG=${TG} port=${PORT}"
+        done
+
+      # ── STEP 7: Deploy via CodeDeploy Blue/Green ──────────────────────
+      - echo "=== STEP 7: Triggering CodeDeploy Blue/Green ==="
+      - |
+        for svc in auth-service course-service enrollment-service progress-service ai-service; do
+          NEW_ARN=$(cat /tmp/${svc}-arn.txt)
+          APPSPEC_CONTENT=$(cat /tmp/appspec-${svc}.yml)
+
+          DEPLOY_ID=$(aws deploy create-deployment \
+            --application-name $APP_NAME \
+            --deployment-group-name "${svc}-deploy-group" \
+            --revision "revisionType=AppSpecContent,appSpecContent={content='${APPSPEC_CONTENT}'}" \
+            --deployment-config-name CodeDeployDefault.ECSAllAtOnce \
+            --description "Blue/Green $svc $IMAGE_TAG" \
+            --region $REGION \
+            --query 'deploymentId' --output text 2>/dev/null || echo "SKIP")
+
+          if [ "$DEPLOY_ID" = "SKIP" ] || [ -z "$DEPLOY_ID" ]; then
+            echo "  ⚠️  $svc CodeDeploy failed — using rolling fallback"
+            aws ecs update-service \
+              --cluster $CLUSTER --service $svc \
+              --task-definition $NEW_ARN \
+              --force-new-deployment \
+              --region $REGION \
+              --query 'service.serviceName' --output text
+          else
+            echo "  ✅ $svc Blue/Green → $DEPLOY_ID"
+          fi
+        done
+
+      - echo "=== ALL SERVICES DEPLOYED ==="
+      - echo "Commit $IMAGE_TAG"
+
+reports:
+  olp-test-reports:
+    files:
+      - "olp_code/**/target/surefire-reports/TEST-*.xml"
+    file-format: JUNITXML
+    discard-paths: no
+
+  olp-coverage-reports:
+    files:
+      - "olp_code/**/target/site/jacoco/jacoco.xml"
+    file-format: JUNITXML
+    discard-paths: no
+
+artifacts:
+  files:
+    - "olp_code/**/target/site/jacoco/**"

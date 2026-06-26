@@ -40,6 +40,9 @@
         <testcontainers.version>1.19.3</testcontainers.version>
         <postgresql.version>42.7.1</postgresql.version>
         <flyway.version>10.10.0</flyway.version>
+        <jacoco.version>0.8.11</jacoco.version>
+        <surefire.version>3.2.2</surefire.version>
+        <coverage.minimum>0.70</coverage.minimum>
 
         <!-- AWS SDK version — only used when aws profile is active -->
         <aws-sdk.version>2.25.11</aws-sdk.version>
@@ -106,7 +109,7 @@
                 <version>${mapstruct.version}</version>
             </dependency>
 
-            <!-- Flyway — explicit versions since flyway-database-postgresql not in Spring BOM -->
+            <!-- Flyway -->
             <dependency>
                 <groupId>org.flywaydb</groupId>
                 <artifactId>flyway-core</artifactId>
@@ -121,25 +124,18 @@
         </dependencies>
     </dependencyManagement>
 
-    <!--
-        TWO PROFILES:
-        local  (default) — no AWS SDK, runs with H2 + mocks, works offline
-        aws              — full AWS SDK, use this when deploying to ECS
-    -->
     <profiles>
         <profile>
             <id>local</id>
             <activation>
                 <activeByDefault>true</activeByDefault>
             </activation>
-            <!-- No extra dependencies — AWS SDK excluded entirely on local -->
         </profile>
 
         <profile>
             <id>aws</id>
             <dependencyManagement>
                 <dependencies>
-                    <!-- AWS SDK BOM — only imported when aws profile is active -->
                     <dependency>
                         <groupId>software.amazon.awssdk</groupId>
                         <artifactId>bom</artifactId>
@@ -155,6 +151,8 @@
     <build>
         <pluginManagement>
             <plugins>
+
+                <!-- Spring Boot -->
                 <plugin>
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
@@ -168,6 +166,8 @@
                         </excludes>
                     </configuration>
                 </plugin>
+
+                <!-- Compiler with Lombok + MapStruct annotation processors -->
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
@@ -189,8 +189,99 @@
                         </annotationProcessorPaths>
                     </configuration>
                 </plugin>
+
+                <!-- Surefire — runs unit tests, generates XML for CodeBuild Reports -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${surefire.version}</version>
+                    <configuration>
+                        <includes>
+                            <include>**/*Test.java</include>
+                            <include>**/*Tests.java</include>
+                        </includes>
+                        <failIfNoSpecifiedTests>false</failIfNoSpecifiedTests>
+                    </configuration>
+                </plugin>
+
+                <!-- JaCoCo — code coverage reports + threshold enforcement -->
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
+                    <executions>
+                        <!-- 1. Attach JaCoCo agent before tests run -->
+                        <execution>
+                            <id>prepare-agent</id>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                        </execution>
+                        <!-- 2. Generate HTML + XML report after tests -->
+                        <execution>
+                            <id>report</id>
+                            <phase>verify</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                            <configuration>
+                                <!-- HTML report at target/site/jacoco/index.html -->
+                                <outputDirectory>${project.reporting.outputDirectory}/jacoco</outputDirectory>
+                            </configuration>
+                        </execution>
+                        <!-- 3. Fail build if coverage drops below threshold -->
+                        <execution>
+                            <id>coverage-check</id>
+                            <goals>
+                                <goal>check</goal>
+                            </goals>
+                            <configuration>
+                                <rules>
+                                    <rule>
+                                        <element>BUNDLE</element>
+                                        <limits>
+                                            <limit>
+                                                <counter>LINE</counter>
+                                                <value>COVEREDRATIO</value>
+                                                <minimum>${coverage.minimum}</minimum>
+                                            </limit>
+                                            <limit>
+                                                <counter>BRANCH</counter>
+                                                <value>COVEREDRATIO</value>
+                                                <minimum>0.60</minimum>
+                                            </limit>
+                                        </limits>
+                                        <!-- Exclude boilerplate — only measure service logic -->
+                                        <excludes>
+                                            <exclude>**/dto/**</exclude>
+                                            <exclude>**/entity/**</exclude>
+                                            <exclude>**/config/**</exclude>
+                                            <exclude>**/*Application.*</exclude>
+                                            <exclude>**/exception/**</exclude>
+                                            <exclude>**/repository/**</exclude>
+                                        </excludes>
+                                    </rule>
+                                </rules>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+
             </plugins>
         </pluginManagement>
+
+        <!-- Apply JaCoCo + Surefire to ALL child modules automatically -->
+        <plugins>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+
     </build>
 
 </project>
