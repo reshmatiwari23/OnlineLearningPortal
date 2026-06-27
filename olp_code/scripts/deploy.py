@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, subprocess, json, os
+import sys, subprocess, os
 
 svc = sys.argv[1]
 app_name = sys.argv[2]
@@ -12,7 +12,6 @@ with open(f'/tmp/appspec-{svc}.yml') as f:
 with open(f'/tmp/{svc}-arn.txt') as f:
     task_def_arn = f.read().strip()
 
-# Try CodeDeploy Blue/Green
 try:
     result = subprocess.run([
         'aws', 'deploy', 'create-deployment',
@@ -27,8 +26,7 @@ try:
     ], capture_output=True, text=True, timeout=30)
 
     if result.returncode == 0 and result.stdout.strip():
-        deploy_id = result.stdout.strip()
-        print(f"✅ {svc} Blue/Green → {deploy_id}")
+        print(f"✅ {svc} Blue/Green → {result.stdout.strip()}")
     else:
         raise Exception(result.stderr)
 

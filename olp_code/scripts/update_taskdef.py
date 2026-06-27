@@ -5,20 +5,24 @@ svc = sys.argv[1]
 repo = sys.argv[2]
 tag = sys.argv[3]
 
-with open(f'/tmp/{svc}-raw.json') as f:
+# buildspec saves files as /tmp/{short-name}-raw.json
+# e.g. auth-service -> /tmp/auth-raw.json
+short = svc.replace('-service', '')
+input_file = f'/tmp/{short}-raw.json'
+output_file = f'/tmp/taskdef-{svc}.json'
+
+with open(input_file) as f:
     td = json.load(f)
 
-# Remove read-only fields
 for k in ['taskDefinitionArn','revision','status','requiresAttributes',
           'compatibilities','registeredAt','registeredBy']:
     td.pop(k, None)
 
-# Update image
 for c in td.get('containerDefinitions', []):
     if c['name'] == svc:
         c['image'] = f"{repo}/olp/{svc}:{tag}"
 
-with open(f'/tmp/taskdef-{svc}.json', 'w') as f:
+with open(output_file, 'w') as f:
     json.dump(td, f, default=str)
 
 print(f"taskdef-{svc}.json ready")
