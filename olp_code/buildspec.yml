@@ -94,10 +94,14 @@ phases:
       - python3 olp_code/scripts/deploy.py progress-service $APP_NAME $REGION
       - python3 olp_code/scripts/deploy.py ai-service $APP_NAME $REGION
 
+      - echo "=== STEP 8 - Upload Coverage Reports to S3 ==="
+      - for svc in auth-service course-service enrollment-service progress-service ai-service; do if [ -d "olp_code/$svc/target/site/jacoco" ]; then aws s3 sync olp_code/$svc/target/site/jacoco/ s3://olp-assets-418272762620/coverage/$svc/ --delete --quiet && echo "  ✅ $svc coverage uploaded"; fi; done
+
       - echo "=== ALL SERVICES DEPLOYED ==="
+      - echo "Coverage reports at https://d1ka6o9mjvg4i9.cloudfront.net/coverage/auth-service/index.html"
 
 reports:
-  olp-unit-tests:
+  olp-build-olp-unit-tests:
     files:
       - "**/target/surefire-reports/TEST-*.xml"
     base-directory: "olp_code"
