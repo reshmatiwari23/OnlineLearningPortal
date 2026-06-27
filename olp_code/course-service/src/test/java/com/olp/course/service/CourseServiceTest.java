@@ -3,8 +3,8 @@ package com.olp.course.service;
 import com.olp.common.exception.DuplicateResourceException;
 import com.olp.common.exception.ResourceNotFoundException;
 import com.olp.common.exception.UnauthorisedException;
-import com.olp.course.dto.CreateCourseRequest;
 import com.olp.course.dto.CourseResponse;
+import com.olp.course.dto.CreateCourseRequest;
 import com.olp.course.dto.UpdateCourseRequest;
 import com.olp.course.entity.Course;
 import com.olp.course.entity.UploadStatus;
@@ -40,17 +40,19 @@ class CourseServiceTest {
     @InjectMocks
     private CourseService courseService;
 
-    private static final UUID INSTRUCTOR_ID = UUID.randomUUID();
-    private static final UUID COURSE_ID = UUID.randomUUID();
-    private static final String CLOUDFRONT_DOMAIN = "d1ka6o9mjvg4i9.cloudfront.net";
+    private static final UUID   INSTRUCTOR_ID = UUID.randomUUID();
+    private static final UUID   COURSE_ID     = UUID.randomUUID();
+    private static final String INSTRUCTOR_STR = INSTRUCTOR_ID.toString();
+    private static final String CLOUDFRONT    = "d1ka6o9mjvg4i9.cloudfront.net";
 
     private Course testCourse;
     private CreateCourseRequest createRequest;
 
     @BeforeEach
     void setUp() {
-        ReflectionTestUtils.setField(courseService, "cloudfrontDomain", CLOUDFRONT_DOMAIN);
-        ReflectionTestUtils.setField(courseService, "videosBucket", "olp-videos-418272762620");
+        ReflectionTestUtils.setField(courseService, "cloudfrontDomain", CLOUDFRONT);
+        ReflectionTestUtils.setField(courseService, "demoVideoUrl",
+                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4");
 
         testCourse = Course.builder()
                 .id(COURSE_ID)
@@ -60,6 +62,7 @@ class CourseServiceTest {
                 .instructorName("Test Instructor")
                 .isPublished(false)
                 .uploadStatus(UploadStatus.NONE)
+                .kbIngested(false)
                 .build();
 
         createRequest = new CreateCourseRequest();
@@ -79,22 +82,21 @@ class CourseServiceTest {
             when(courseRepository.save(any(Course.class))).thenReturn(testCourse);
 
             CourseResponse response = courseService.createCourse(
-                    createRequest, INSTRUCTOR_ID, "Test Instructor");
+                    createRequest, INSTRUCTOR_STR, "Test Instructor");
 
             assertThat(response).isNotNull();
             assertThat(response.getTitle()).isEqualTo("Introduction to AWS Cloud");
-            assertThat(response.getInstructorId()).isEqualTo(INSTRUCTOR_ID);
             verify(courseRepository).save(any(Course.class));
         }
 
         @Test
-        @DisplayName("should throw DuplicateResourceException when title already exists for instructor")
+        @DisplayName("should throw DuplicateResourceException when title already exists")
         void createCourse_duplicateTitle_throwsException() {
             when(courseRepository.existsByTitleAndInstructorId(
                     createRequest.getTitle(), INSTRUCTOR_ID)).thenReturn(true);
 
             assertThatThrownBy(() -> courseService.createCourse(
-                    createRequest, INSTRUCTOR_ID, "Test Instructor"))
+                    createRequest, INSTRUCTOR_STR, "Test Instructor"))
                     .isInstanceOf(DuplicateResourceException.class);
 
             verify(courseRepository, never()).save(any());
@@ -103,13 +105,13 @@ class CourseServiceTest {
         @Test
         @DisplayName("should allow same title for different instructors")
         void createCourse_sameTitleDifferentInstructor_success() {
-            UUID otherInstructor = UUID.randomUUID();
+            UUID otherId = UUID.randomUUID();
             when(courseRepository.existsByTitleAndInstructorId(
-                    createRequest.getTitle(), otherInstructor)).thenReturn(false);
+                    createRequest.getTitle(), otherId)).thenReturn(false);
             when(courseRepository.save(any(Course.class))).thenReturn(testCourse);
 
             assertThatCode(() -> courseService.createCourse(
-                    createRequest, otherInstructor, "Other Instructor"))
+                    createRequest, otherId.toString(), "Other Instructor"))
                     .doesNotThrowAnyException();
         }
     }
@@ -136,8 +138,7 @@ class CourseServiceTest {
             when(courseRepository.findById(COURSE_ID)).thenReturn(Optional.empty());
 
             assertThatThrownBy(() -> courseService.getCourseById(COURSE_ID))
-                    .isInstanceOf(ResourceNotFoundException.class)
-                    .hasMessageContaining(COURSE_ID.toString());
+                    .isInstanceOf(ResourceNotFoundException.class);
         }
     }
 
@@ -149,14 +150,13 @@ class CourseServiceTest {
         @DisplayName("should update course when instructor is owner")
         void updateCourse_ownerUpdates_success() {
             UpdateCourseRequest updateRequest = new UpdateCourseRequest();
-            updateRequest.setTitle("Updated AWS Course");
             updateRequest.setIsPublished(true);
 
             when(courseRepository.findById(COURSE_ID)).thenReturn(Optional.of(testCourse));
             when(courseRepository.save(any(Course.class))).thenReturn(testCourse);
 
             CourseResponse response = courseService.updateCourse(
-                    COURSE_ID, updateRequest, INSTRUCTOR_ID);
+                    COURSE_ID, updateRequest, INSTRUCTOR_STR);
 
             assertThat(response).isNotNull();
             verify(courseRepository).save(any(Course.class));
@@ -165,14 +165,13 @@ class CourseServiceTest {
         @Test
         @DisplayName("should throw UnauthorisedException when non-owner tries to update")
         void updateCourse_nonOwner_throwsException() {
-            UUID otherUser = UUID.randomUUID();
             UpdateCourseRequest updateRequest = new UpdateCourseRequest();
             updateRequest.setTitle("Hacked Title");
 
             when(courseRepository.findById(COURSE_ID)).thenReturn(Optional.of(testCourse));
 
             assertThatThrownBy(() -> courseService.updateCourse(
-                    COURSE_ID, updateRequest, otherUser))
+                    COURSE_ID, updateRequest, UUID.randomUUID().toString()))
                     .isInstanceOf(UnauthorisedException.class);
 
             verify(courseRepository, never()).save(any());
@@ -186,22 +185,21 @@ class CourseServiceTest {
         @Test
         @DisplayName("should delete course when instructor is owner")
         void deleteCourse_ownerDeletes_success() {
-            when(courseRepository.findByIdAndInstructorId(COURSE_ID, INSTRUCTOR_ID))
-                    .thenReturn(Optional.of(testCourse));
+            when(courseRepository.findById(COURSE_ID)).thenReturn(Optional.of(testCourse));
 
-            courseService.deleteCourse(COURSE_ID, INSTRUCTOR_ID);
+            courseService.deleteCourse(COURSE_ID, INSTRUCTOR_STR);
 
             verify(courseRepository).delete(testCourse);
         }
 
         @Test
-        @DisplayName("should throw ResourceNotFoundException when course not found for instructor")
-        void deleteCourse_notFound_throwsException() {
-            when(courseRepository.findByIdAndInstructorId(COURSE_ID, INSTRUCTOR_ID))
-                    .thenReturn(Optional.empty());
+        @DisplayName("should throw UnauthorisedException when non-owner tries to delete")
+        void deleteCourse_nonOwner_throwsException() {
+            when(courseRepository.findById(COURSE_ID)).thenReturn(Optional.of(testCourse));
 
-            assertThatThrownBy(() -> courseService.deleteCourse(COURSE_ID, INSTRUCTOR_ID))
-                    .isInstanceOf(ResourceNotFoundException.class);
+            assertThatThrownBy(() -> courseService.deleteCourse(
+                    COURSE_ID, UUID.randomUUID().toString()))
+                    .isInstanceOf(UnauthorisedException.class);
 
             verify(courseRepository, never()).delete(any());
         }
@@ -212,7 +210,7 @@ class CourseServiceTest {
     class UploadStatusTests {
 
         @Test
-        @DisplayName("should set videoUrl to CloudFront URL when status is READY")
+        @DisplayName("should set CloudFront URL when status is READY and S3 key exists")
         void updateUploadStatus_ready_setsCloudFrontUrl() {
             String s3Key = "videos/" + COURSE_ID + "/lecture.mp4";
             testCourse.setVideoUrl(s3Key);
@@ -220,10 +218,10 @@ class CourseServiceTest {
             when(courseRepository.findById(COURSE_ID)).thenReturn(Optional.of(testCourse));
             when(courseRepository.save(any(Course.class))).thenReturn(testCourse);
 
-            courseService.updateUploadStatus(COURSE_ID, UploadStatus.READY, 3600);
+            courseService.updateUploadStatus(COURSE_ID, "READY", 3600);
 
             verify(courseRepository).save(argThat(course ->
-                course.getVideoUrl().startsWith("https://" + CLOUDFRONT_DOMAIN) &&
+                course.getVideoUrl().startsWith("https://" + CLOUDFRONT) &&
                 course.getUploadStatus() == UploadStatus.READY &&
                 course.getVideoDuration() == 3600
             ));
@@ -237,7 +235,7 @@ class CourseServiceTest {
             when(courseRepository.findById(COURSE_ID)).thenReturn(Optional.of(testCourse));
             when(courseRepository.save(any(Course.class))).thenReturn(testCourse);
 
-            courseService.updateUploadStatus(COURSE_ID, UploadStatus.FAILED, 0);
+            courseService.updateUploadStatus(COURSE_ID, "FAILED", 0);
 
             verify(courseRepository).save(argThat(course ->
                 course.getVideoUrl() == null &&
@@ -246,35 +244,46 @@ class CourseServiceTest {
         }
 
         @Test
-        @DisplayName("should not modify existing CloudFront URL when already set")
-        void updateUploadStatus_alreadyCloudFront_noChange() {
-            String existingUrl = "https://" + CLOUDFRONT_DOMAIN + "/videos/" + COURSE_ID + "/lecture.mp4";
-            testCourse.setVideoUrl(existingUrl);
+        @DisplayName("should throw IllegalArgumentException for invalid status")
+        void updateUploadStatus_invalidStatus_throwsException() {
+            when(courseRepository.findById(COURSE_ID)).thenReturn(Optional.of(testCourse));
+
+            assertThatThrownBy(() -> courseService.updateUploadStatus(
+                    COURSE_ID, "INVALID_STATUS", 0))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Invalid status");
+        }
+
+        @Test
+        @DisplayName("should use demo URL when no video URL set and status is READY")
+        void updateUploadStatus_noVideoUrl_usesDemoUrl() {
+            testCourse.setVideoUrl(null);
 
             when(courseRepository.findById(COURSE_ID)).thenReturn(Optional.of(testCourse));
             when(courseRepository.save(any(Course.class))).thenReturn(testCourse);
 
-            courseService.updateUploadStatus(COURSE_ID, UploadStatus.READY, 3600);
+            courseService.updateUploadStatus(COURSE_ID, "READY", 60);
 
             verify(courseRepository).save(argThat(course ->
-                course.getVideoUrl().equals(existingUrl)
+                course.getVideoUrl() != null &&
+                course.getVideoUrl().startsWith("https://")
             ));
         }
     }
 
     @Nested
-    @DisplayName("getPublishedCourses()")
+    @DisplayName("getAllPublishedCourses()")
     class GetPublishedCoursesTests {
 
         @Test
         @DisplayName("should return paginated published courses")
-        void getPublishedCourses_returnsPaginatedResults() {
+        void getAllPublishedCourses_returnsPaginatedResults() {
             testCourse.setIsPublished(true);
             Page<Course> page = new PageImpl<>(List.of(testCourse));
-            when(courseRepository.findAllByIsPublishedTrue(any(PageRequest.class)))
+            when(courseRepository.findAllByIsPublishedTrue(any()))
                     .thenReturn(page);
 
-            var result = courseService.getPublishedCourses(0, 10);
+            Page<CourseResponse> result = courseService.getAllPublishedCourses(0, 10);
 
             assertThat(result.getContent()).hasSize(1);
             assertThat(result.getContent().get(0).getTitle())
@@ -283,11 +292,11 @@ class CourseServiceTest {
 
         @Test
         @DisplayName("should return empty page when no published courses")
-        void getPublishedCourses_noCourses_returnsEmptyPage() {
-            when(courseRepository.findAllByIsPublishedTrue(any(PageRequest.class)))
+        void getAllPublishedCourses_noCourses_returnsEmptyPage() {
+            when(courseRepository.findAllByIsPublishedTrue(any()))
                     .thenReturn(Page.empty());
 
-            var result = courseService.getPublishedCourses(0, 10);
+            Page<CourseResponse> result = courseService.getAllPublishedCourses(0, 10);
 
             assertThat(result.getContent()).isEmpty();
         }

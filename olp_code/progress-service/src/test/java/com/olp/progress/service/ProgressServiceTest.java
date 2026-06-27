@@ -1,7 +1,9 @@
 package com.olp.progress.service;
 
+import com.olp.common.exception.ResourceNotFoundException;
 import com.olp.progress.dto.ProgressEvent;
 import com.olp.progress.dto.ProgressResponse;
+import com.olp.progress.dto.UpdateProgressRequest;
 import com.olp.progress.entity.VideoProgress;
 import com.olp.progress.repository.VideoProgressRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,6 +16,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -28,13 +31,14 @@ class ProgressServiceTest {
 
     @Mock private VideoProgressRepository progressRepository;
     @Mock private RedisProgressService redisProgressService;
-    @Mock private SqsProgressPublisher sqsProgressPublisher;
+    @Mock private SqsPort sqsPort;
 
     @InjectMocks
     private ProgressService progressService;
 
-    private static final UUID USER_ID = UUID.randomUUID();
-    private static final UUID COURSE_ID = UUID.randomUUID();
+    private static final UUID   USER_ID   = UUID.randomUUID();
+    private static final UUID   COURSE_ID = UUID.randomUUID();
+    private static final String USER_STR  = USER_ID.toString();
 
     private VideoProgress testProgress;
 
@@ -47,7 +51,16 @@ class ProgressServiceTest {
                 .currentTimeSecs(300)
                 .durationSecs(600)
                 .percentComplete(50)
+                .lastUpdatedAt(LocalDateTime.now())
                 .build();
+    }
+
+    // Helper to build request
+    private UpdateProgressRequest request(int current, int duration) {
+        UpdateProgressRequest r = new UpdateProgressRequest();
+        r.setCurrentTimeSecs(current);
+        r.setDurationSecs(duration);
+        return r;
     }
 
     @Nested
@@ -57,56 +70,66 @@ class ProgressServiceTest {
         @Test
         @DisplayName("should write to Redis and publish to SQS")
         void updateProgress_writesRedisAndPublishesSQS() {
-            progressService.updateProgress(USER_ID, COURSE_ID, 300, 600);
+            ProgressResponse response = progressService.updateProgress(
+                    COURSE_ID, USER_STR, request(300, 600));
 
             verify(redisProgressService).writeProgress(USER_ID, COURSE_ID, 50);
-            verify(sqsProgressPublisher).publish(any(ProgressEvent.class));
+            verify(sqsPort).publish(any(ProgressEvent.class));
+            assertThat(response.getPercentComplete()).isEqualTo(50);
         }
 
         @Test
-        @DisplayName("should calculate percentage correctly")
+        @DisplayName("should calculate 75% correctly")
         void updateProgress_calculatesPercentageCorrectly() {
-            progressService.updateProgress(USER_ID, COURSE_ID, 450, 600);
+            ProgressResponse response = progressService.updateProgress(
+                    COURSE_ID, USER_STR, request(450, 600));
 
             verify(redisProgressService).writeProgress(USER_ID, COURSE_ID, 75);
+            assertThat(response.getPercentComplete()).isEqualTo(75);
         }
 
         @Test
         @DisplayName("should cap percentage at 100 when currentTime exceeds duration")
         void updateProgress_exceedsDuration_capsAt100() {
-            progressService.updateProgress(USER_ID, COURSE_ID, 700, 600);
+            ProgressResponse response = progressService.updateProgress(
+                    COURSE_ID, USER_STR, request(700, 600));
 
             verify(redisProgressService).writeProgress(USER_ID, COURSE_ID, 100);
+            assertThat(response.getPercentComplete()).isEqualTo(100);
         }
 
         @Test
         @DisplayName("should return zero percent when currentTime is zero")
         void updateProgress_zeroProgress_returnsZero() {
-            progressService.updateProgress(USER_ID, COURSE_ID, 0, 600);
+            ProgressResponse response = progressService.updateProgress(
+                    COURSE_ID, USER_STR, request(0, 600));
 
             verify(redisProgressService).writeProgress(USER_ID, COURSE_ID, 0);
+            assertThat(response.getPercentComplete()).isEqualTo(0);
         }
 
         @Test
-        @DisplayName("should still return response when SQS publish fails")
-        void updateProgress_sqsFails_doesNotThrow() {
+        @DisplayName("should persist directly when SQS publish fails")
+        void updateProgress_sqsFails_persistsDirectly() {
             doThrow(new RuntimeException("SQS unavailable"))
-                    .when(sqsProgressPublisher).publish(any());
+                    .when(sqsPort).publish(any());
+            when(progressRepository.findByUserIdAndCourseId(USER_ID, COURSE_ID))
+                    .thenReturn(Optional.of(testProgress));
 
             assertThatCode(() ->
-                    progressService.updateProgress(USER_ID, COURSE_ID, 300, 600))
+                    progressService.updateProgress(COURSE_ID, USER_STR, request(300, 600)))
                     .doesNotThrowAnyException();
 
-            verify(redisProgressService).writeProgress(any(), any(), anyInt());
+            verify(progressRepository).save(any());
         }
 
         @Test
         @DisplayName("should publish correct ProgressEvent to SQS")
         void updateProgress_publishesCorrectEvent() {
-            progressService.updateProgress(USER_ID, COURSE_ID, 300, 600);
+            progressService.updateProgress(COURSE_ID, USER_STR, request(300, 600));
 
             ArgumentCaptor<ProgressEvent> captor = ArgumentCaptor.forClass(ProgressEvent.class);
-            verify(sqsProgressPublisher).publish(captor.capture());
+            verify(sqsPort).publish(captor.capture());
 
             ProgressEvent event = captor.getValue();
             assertThat(event.getUserId()).isEqualTo(USER_ID);
@@ -114,6 +137,24 @@ class ProgressServiceTest {
             assertThat(event.getCurrentTimeSecs()).isEqualTo(300);
             assertThat(event.getDurationSecs()).isEqualTo(600);
             assertThat(event.getPercentComplete()).isEqualTo(50);
+        }
+
+        @Test
+        @DisplayName("should return zero when duration is zero")
+        void updateProgress_zeroDuration_returnsZero() {
+            ProgressResponse response = progressService.updateProgress(
+                    COURSE_ID, USER_STR, request(100, 0));
+
+            assertThat(response.getPercentComplete()).isEqualTo(0);
+        }
+
+        @Test
+        @DisplayName("should mark completed when percent reaches 100")
+        void updateProgress_complete_marksCompleted() {
+            ProgressResponse response = progressService.updateProgress(
+                    COURSE_ID, USER_STR, request(600, 600));
+
+            assertThat(response.isCompleted()).isTrue();
         }
     }
 
@@ -124,38 +165,51 @@ class ProgressServiceTest {
         @Test
         @DisplayName("should return progress from Redis when available")
         void getProgress_redisHit_returnsRedisData() {
-            when(redisProgressService.readProgress(USER_ID, COURSE_ID)).thenReturn(Optional.of(75));
-
-            ProgressResponse response = progressService.getProgress(USER_ID, COURSE_ID);
-
-            assertThat(response.getPercentComplete()).isEqualTo(75);
-            assertThat(response.getSource()).isEqualTo("redis");
-            verify(progressRepository, never()).findByUserIdAndCourseId(any(), any());
-        }
-
-        @Test
-        @DisplayName("should fall back to database when Redis cache miss")
-        void getProgress_redisMiss_fallsBackToDatabase() {
-            when(redisProgressService.readProgress(USER_ID, COURSE_ID)).thenReturn(Optional.empty());
+            when(redisProgressService.readProgress(USER_ID, COURSE_ID)).thenReturn(75);
             when(progressRepository.findByUserIdAndCourseId(USER_ID, COURSE_ID))
                     .thenReturn(Optional.of(testProgress));
 
-            ProgressResponse response = progressService.getProgress(USER_ID, COURSE_ID);
+            ProgressResponse response = progressService.getProgress(COURSE_ID, USER_STR);
+
+            assertThat(response.getPercentComplete()).isEqualTo(75);
+            assertThat(response.getSource()).isEqualTo("redis");
+        }
+
+        @Test
+        @DisplayName("should fall back to database when Redis returns null")
+        void getProgress_redisMiss_fallsBackToDatabase() {
+            when(redisProgressService.readProgress(USER_ID, COURSE_ID)).thenReturn(null);
+            when(progressRepository.findByUserIdAndCourseId(USER_ID, COURSE_ID))
+                    .thenReturn(Optional.of(testProgress));
+
+            ProgressResponse response = progressService.getProgress(COURSE_ID, USER_STR);
 
             assertThat(response.getPercentComplete()).isEqualTo(50);
             assertThat(response.getSource()).isEqualTo("database");
         }
 
         @Test
-        @DisplayName("should return zero progress when not found in Redis or database")
-        void getProgress_notFound_returnsZero() {
-            when(redisProgressService.readProgress(USER_ID, COURSE_ID)).thenReturn(Optional.empty());
+        @DisplayName("should throw ResourceNotFoundException when not found in DB")
+        void getProgress_notFound_throwsException() {
+            when(redisProgressService.readProgress(USER_ID, COURSE_ID)).thenReturn(null);
             when(progressRepository.findByUserIdAndCourseId(USER_ID, COURSE_ID))
                     .thenReturn(Optional.empty());
 
-            ProgressResponse response = progressService.getProgress(USER_ID, COURSE_ID);
+            assertThatThrownBy(() -> progressService.getProgress(COURSE_ID, USER_STR))
+                    .isInstanceOf(ResourceNotFoundException.class);
+        }
 
-            assertThat(response.getPercentComplete()).isZero();
+        @Test
+        @DisplayName("should fall back to DB when Redis throws exception")
+        void getProgress_redisException_fallsBackToDatabase() {
+            when(redisProgressService.readProgress(USER_ID, COURSE_ID))
+                    .thenThrow(new RuntimeException("Redis unavailable"));
+            when(progressRepository.findByUserIdAndCourseId(USER_ID, COURSE_ID))
+                    .thenReturn(Optional.of(testProgress));
+
+            ProgressResponse response = progressService.getProgress(COURSE_ID, USER_STR);
+
+            assertThat(response.getSource()).isEqualTo("database");
         }
     }
 
@@ -167,16 +221,14 @@ class ProgressServiceTest {
         @DisplayName("should return all progress records for user")
         void getAllProgressForUser_returnsAllRecords() {
             VideoProgress second = VideoProgress.builder()
-                    .id(UUID.randomUUID())
-                    .userId(USER_ID)
-                    .courseId(UUID.randomUUID())
-                    .percentComplete(100)
-                    .build();
+                    .id(UUID.randomUUID()).userId(USER_ID)
+                    .courseId(UUID.randomUUID()).percentComplete(100)
+                    .lastUpdatedAt(LocalDateTime.now()).build();
 
             when(progressRepository.findAllByUserId(USER_ID))
                     .thenReturn(List.of(testProgress, second));
 
-            List<ProgressResponse> results = progressService.getAllProgressForUser(USER_ID);
+            List<ProgressResponse> results = progressService.getAllProgressForUser(USER_STR);
 
             assertThat(results).hasSize(2);
             assertThat(results).allMatch(r -> r.getUserId().equals(USER_ID));
@@ -187,9 +239,7 @@ class ProgressServiceTest {
         void getAllProgressForUser_noProgress_returnsEmpty() {
             when(progressRepository.findAllByUserId(USER_ID)).thenReturn(List.of());
 
-            List<ProgressResponse> results = progressService.getAllProgressForUser(USER_ID);
-
-            assertThat(results).isEmpty();
+            assertThat(progressService.getAllProgressForUser(USER_STR)).isEmpty();
         }
     }
 
@@ -198,42 +248,38 @@ class ProgressServiceTest {
     class PersistProgressEventTests {
 
         @Test
-        @DisplayName("should upsert progress when record does not exist")
-        void persistProgressEvent_newRecord_insertsNew() {
+        @DisplayName("should insert new record when not exists")
+        void persistProgressEvent_newRecord_inserts() {
             ProgressEvent event = ProgressEvent.builder()
                     .userId(USER_ID).courseId(COURSE_ID)
                     .currentTimeSecs(300).durationSecs(600)
-                    .percentComplete(50).build();
+                    .percentComplete(50).eventTime(LocalDateTime.now()).build();
 
             when(progressRepository.findByUserIdAndCourseId(USER_ID, COURSE_ID))
                     .thenReturn(Optional.empty());
-            when(progressRepository.save(any())).thenReturn(testProgress);
 
             progressService.persistProgressEvent(event);
 
             verify(progressRepository).save(argThat(p ->
-                p.getPercentComplete() == 50 &&
-                p.getCurrentTimeSecs() == 300
+                p.getPercentComplete() == 50 && p.getCurrentTimeSecs() == 300
             ));
         }
 
         @Test
         @DisplayName("should update existing record on upsert")
-        void persistProgressEvent_existingRecord_updatesExisting() {
+        void persistProgressEvent_existingRecord_updates() {
             ProgressEvent event = ProgressEvent.builder()
                     .userId(USER_ID).courseId(COURSE_ID)
                     .currentTimeSecs(480).durationSecs(600)
-                    .percentComplete(80).build();
+                    .percentComplete(80).eventTime(LocalDateTime.now()).build();
 
             when(progressRepository.findByUserIdAndCourseId(USER_ID, COURSE_ID))
                     .thenReturn(Optional.of(testProgress));
-            when(progressRepository.save(any())).thenReturn(testProgress);
 
             progressService.persistProgressEvent(event);
 
             verify(progressRepository).save(argThat(p ->
-                p.getPercentComplete() == 80 &&
-                p.getCurrentTimeSecs() == 480
+                p.getPercentComplete() == 80 && p.getCurrentTimeSecs() == 480
             ));
         }
 
@@ -243,11 +289,10 @@ class ProgressServiceTest {
             ProgressEvent event = ProgressEvent.builder()
                     .userId(USER_ID).courseId(COURSE_ID)
                     .currentTimeSecs(600).durationSecs(600)
-                    .percentComplete(100).build();
+                    .percentComplete(100).eventTime(LocalDateTime.now()).build();
 
             when(progressRepository.findByUserIdAndCourseId(USER_ID, COURSE_ID))
                     .thenReturn(Optional.of(testProgress));
-            when(progressRepository.save(any())).thenReturn(testProgress);
 
             progressService.persistProgressEvent(event);
 

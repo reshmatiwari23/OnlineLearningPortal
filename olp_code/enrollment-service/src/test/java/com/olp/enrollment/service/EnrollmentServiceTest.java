@@ -33,8 +33,9 @@ class EnrollmentServiceTest {
     @InjectMocks
     private EnrollmentService enrollmentService;
 
-    private static final UUID USER_ID = UUID.randomUUID();
-    private static final UUID COURSE_ID = UUID.randomUUID();
+    private static final UUID   USER_ID    = UUID.randomUUID();
+    private static final UUID   COURSE_ID  = UUID.randomUUID();
+    private static final String USER_STR   = USER_ID.toString();
 
     private Enrollment testEnrollment;
 
@@ -60,7 +61,7 @@ class EnrollmentServiceTest {
             when(enrollmentRepository.save(any(Enrollment.class)))
                     .thenReturn(testEnrollment);
 
-            EnrollmentResponse response = enrollmentService.enrol(COURSE_ID, USER_ID);
+            EnrollmentResponse response = enrollmentService.enrol(COURSE_ID, USER_STR);
 
             assertThat(response).isNotNull();
             assertThat(response.getCourseId()).isEqualTo(COURSE_ID);
@@ -74,7 +75,7 @@ class EnrollmentServiceTest {
             when(enrollmentRepository.existsByCourseIdAndUserId(COURSE_ID, USER_ID))
                     .thenReturn(true);
 
-            assertThatThrownBy(() -> enrollmentService.enrol(COURSE_ID, USER_ID))
+            assertThatThrownBy(() -> enrollmentService.enrol(COURSE_ID, USER_STR))
                     .isInstanceOf(DuplicateResourceException.class)
                     .hasMessageContaining("already enrolled");
 
@@ -82,14 +83,14 @@ class EnrollmentServiceTest {
         }
 
         @Test
-        @DisplayName("should throw DuplicateResourceException on race condition (DB constraint)")
-        void enrol_racecondition_throwsException() {
+        @DisplayName("should throw DuplicateResourceException on race condition DB constraint")
+        void enrol_raceCondition_throwsException() {
             when(enrollmentRepository.existsByCourseIdAndUserId(COURSE_ID, USER_ID))
                     .thenReturn(false);
             when(enrollmentRepository.save(any(Enrollment.class)))
                     .thenThrow(new DataIntegrityViolationException("unique constraint"));
 
-            assertThatThrownBy(() -> enrollmentService.enrol(COURSE_ID, USER_ID))
+            assertThatThrownBy(() -> enrollmentService.enrol(COURSE_ID, USER_STR))
                     .isInstanceOf(DuplicateResourceException.class);
         }
 
@@ -101,7 +102,7 @@ class EnrollmentServiceTest {
             when(enrollmentRepository.save(any(Enrollment.class)))
                     .thenReturn(testEnrollment);
 
-            EnrollmentResponse response = enrollmentService.enrol(COURSE_ID, USER_ID);
+            EnrollmentResponse response = enrollmentService.enrol(COURSE_ID, USER_STR);
 
             assertThat(response.getEnrolledAt()).isNotNull();
         }
@@ -117,7 +118,7 @@ class EnrollmentServiceTest {
             when(enrollmentRepository.findByCourseIdAndUserId(COURSE_ID, USER_ID))
                     .thenReturn(Optional.of(testEnrollment));
 
-            enrollmentService.unenrol(COURSE_ID, USER_ID);
+            enrollmentService.unenrol(COURSE_ID, USER_STR);
 
             verify(enrollmentRepository).delete(testEnrollment);
         }
@@ -128,7 +129,7 @@ class EnrollmentServiceTest {
             when(enrollmentRepository.findByCourseIdAndUserId(COURSE_ID, USER_ID))
                     .thenReturn(Optional.empty());
 
-            assertThatThrownBy(() -> enrollmentService.unenrol(COURSE_ID, USER_ID))
+            assertThatThrownBy(() -> enrollmentService.unenrol(COURSE_ID, USER_STR))
                     .isInstanceOf(ResourceNotFoundException.class);
 
             verify(enrollmentRepository, never()).delete(any());
@@ -145,9 +146,7 @@ class EnrollmentServiceTest {
             when(enrollmentRepository.existsByCourseIdAndUserId(COURSE_ID, USER_ID))
                     .thenReturn(true);
 
-            boolean result = enrollmentService.isEnrolled(COURSE_ID, USER_ID);
-
-            assertThat(result).isTrue();
+            assertThat(enrollmentService.isEnrolled(COURSE_ID, USER_STR)).isTrue();
         }
 
         @Test
@@ -156,9 +155,7 @@ class EnrollmentServiceTest {
             when(enrollmentRepository.existsByCourseIdAndUserId(COURSE_ID, USER_ID))
                     .thenReturn(false);
 
-            boolean result = enrollmentService.isEnrolled(COURSE_ID, USER_ID);
-
-            assertThat(result).isFalse();
+            assertThat(enrollmentService.isEnrolled(COURSE_ID, USER_STR)).isFalse();
         }
     }
 
@@ -170,16 +167,14 @@ class EnrollmentServiceTest {
         @DisplayName("should return all enrollments for user")
         void getMyEnrollments_returnsAllEnrollments() {
             Enrollment second = Enrollment.builder()
-                    .id(UUID.randomUUID())
-                    .userId(USER_ID)
+                    .id(UUID.randomUUID()).userId(USER_ID)
                     .courseId(UUID.randomUUID())
-                    .enrolledAt(LocalDateTime.now())
-                    .build();
+                    .enrolledAt(LocalDateTime.now()).build();
 
             when(enrollmentRepository.findAllByUserId(USER_ID))
                     .thenReturn(List.of(testEnrollment, second));
 
-            List<EnrollmentResponse> results = enrollmentService.getMyEnrollments(USER_ID);
+            List<EnrollmentResponse> results = enrollmentService.getMyEnrollments(USER_STR);
 
             assertThat(results).hasSize(2);
             assertThat(results).allMatch(r -> r.getUserId().equals(USER_ID));
@@ -190,34 +185,28 @@ class EnrollmentServiceTest {
         void getMyEnrollments_noEnrollments_returnsEmpty() {
             when(enrollmentRepository.findAllByUserId(USER_ID)).thenReturn(List.of());
 
-            List<EnrollmentResponse> results = enrollmentService.getMyEnrollments(USER_ID);
-
-            assertThat(results).isEmpty();
+            assertThat(enrollmentService.getMyEnrollments(USER_STR)).isEmpty();
         }
     }
 
     @Nested
-    @DisplayName("getLearnerCount()")
-    class GetLearnerCountTests {
+    @DisplayName("getEnrollmentCount()")
+    class GetEnrollmentCountTests {
 
         @Test
         @DisplayName("should return correct learner count for course")
-        void getLearnerCount_returnsCount() {
+        void getEnrollmentCount_returnsCount() {
             when(enrollmentRepository.countByCourseId(COURSE_ID)).thenReturn(42L);
 
-            long count = enrollmentService.getLearnerCount(COURSE_ID);
-
-            assertThat(count).isEqualTo(42L);
+            assertThat(enrollmentService.getEnrollmentCount(COURSE_ID)).isEqualTo(42L);
         }
 
         @Test
         @DisplayName("should return zero when no learners enrolled")
-        void getLearnerCount_noLearners_returnsZero() {
+        void getEnrollmentCount_noLearners_returnsZero() {
             when(enrollmentRepository.countByCourseId(COURSE_ID)).thenReturn(0L);
 
-            long count = enrollmentService.getLearnerCount(COURSE_ID);
-
-            assertThat(count).isZero();
+            assertThat(enrollmentService.getEnrollmentCount(COURSE_ID)).isZero();
         }
     }
 }
