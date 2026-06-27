@@ -97,9 +97,10 @@ phases:
       - echo "=== ALL SERVICES DEPLOYED ==="
 
 reports:
-  olp-test-reports:
+  olp-unit-tests:
     files:
-      - "olp_code/**/target/surefire-reports/TEST-*.xml"
+      - "**/target/surefire-reports/TEST-*.xml"
+    base-directory: "olp_code"
     file-format: JUNITXML
     discard-paths: no
 
