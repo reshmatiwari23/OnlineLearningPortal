@@ -5,7 +5,7 @@ svc = sys.argv[1]
 repo = sys.argv[2]
 tag = sys.argv[3]
 
-# buildspec saves files as /tmp/{short-name}-raw.json
+# buildspec saves as /tmp/{short}-raw.json
 # e.g. auth-service -> /tmp/auth-raw.json
 short = svc.replace('-service', '')
 input_file = f'/tmp/{short}-raw.json'

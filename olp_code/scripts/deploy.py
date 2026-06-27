@@ -6,10 +6,14 @@ app_name = sys.argv[2]
 region = sys.argv[3]
 cluster = os.environ.get('CLUSTER', 'olp-cluster')
 
+# buildspec saves as /tmp/{short}-arn.txt
+# e.g. auth-service -> /tmp/auth-arn.txt
+short = svc.replace('-service', '')
+
 with open(f'/tmp/appspec-{svc}.yml') as f:
     appspec_content = f.read()
 
-with open(f'/tmp/{svc}-arn.txt') as f:
+with open(f'/tmp/{short}-arn.txt') as f:
     task_def_arn = f.read().strip()
 
 try:
